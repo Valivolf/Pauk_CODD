@@ -1,7 +1,8 @@
 # Offline bundle builder for Pauk (Windows PowerShell 5.1 / 7+, pure ASCII for encoding safety)
+# Automatically starts Docker Desktop if not running, updates Docker images with latest code, and builds the offline .tar archive.
 # Usage:
-#   powershell -ExecutionPolicy Bypass -File .\scripts\offline\make_pauk_bundle.ps1 full
-#   powershell -ExecutionPolicy Bypass -File .\scripts\offline\make_pauk_bundle.ps1 app
+#   .\make_pauk_bundle.cmd full
+#   .\make_pauk_bundle.cmd app
 
 param(
     [Parameter(Position = 0)]
@@ -11,7 +12,7 @@ param(
     [string]$OutDir = ""
 )
 
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Continue"
 
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 Set-Location $RepoRoot
@@ -24,11 +25,61 @@ if (-not (Test-Path $OutDir)) {
 }
 $OutDir = (Resolve-Path $OutDir).Path
 
-docker info *> $null
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "Docker is not running. Please start Docker Desktop and try again."
+function Test-DockerEngine {
+    cmd /c "docker info >nul 2>nul"
+    return ($LASTEXITCODE -eq 0)
+}
+
+function Ensure-DockerRunning {
+    if (Test-DockerEngine) {
+        Write-Host "[Docker] Engine is running." -ForegroundColor Green
+        return
+    }
+
+    Write-Host "[Docker] Docker Engine is not running yet. Searching for Docker Desktop..." -ForegroundColor Yellow
+
+    $Candidates = @(
+        (Join-Path $env:ProgramFiles "Docker\Docker\Docker Desktop.exe"),
+        "C:\Program Files\Docker\Docker\Docker Desktop.exe",
+        (Join-Path $env:LOCALAPPDATA "Docker\Docker Desktop.exe")
+    )
+
+    $DockerExe = $null
+    foreach ($p in $Candidates) {
+        if ($p -and (Test-Path $p)) {
+            $DockerExe = $p
+            break
+        }
+    }
+
+    if ($DockerExe) {
+        Write-Host "[Docker] Starting Docker Desktop: $DockerExe" -ForegroundColor Cyan
+        Start-Process -FilePath $DockerExe
+    } else {
+        Write-Host "[Docker] Docker Desktop.exe not found in standard paths. Trying com.docker.service..." -ForegroundColor Yellow
+        Start-Service -Name "com.docker.service" -ErrorAction SilentlyContinue
+    }
+
+    Write-Host "[Docker] Waiting for Docker Engine daemon to initialize (up to 120 seconds)..." -ForegroundColor Cyan
+    for ($i = 1; $i -le 40; $i++) {
+        Start-Sleep -Seconds 3
+        if (Test-DockerEngine) {
+            Write-Host ""
+            Write-Host "[Docker] Docker Engine is online and ready!" -ForegroundColor Green
+            return
+        }
+        Write-Host -NoNewline "."
+    }
+
+    Write-Host ""
+    Write-Host "ERROR: Docker Engine did not start within 120 seconds." -ForegroundColor Red
+    Write-Host "Please open 'Docker Desktop' on Windows and make sure its engine is started:" -ForegroundColor Yellow
+    Write-Host "  1. Open Docker Desktop from the Start Menu and accept terms if prompted." -ForegroundColor Yellow
+    Write-Host "  2. If Docker Desktop asks for WSL2, run in Administrator PowerShell:  wsl --install --no-distribution" -ForegroundColor Yellow
     exit 1
 }
+
+Ensure-DockerRunning
 
 $AppStamp = Get-Date -Format "yyyyMMdd-HHmm"
 $RobotVersion = Get-Date -Format "yyyyMMddHHmmss"
@@ -46,27 +97,53 @@ function Build-PaukBundle {
     New-Item -ItemType Directory -Path (Join-Path $BundleDir "docker") -Force | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $BundleDir "robot") -Force | Out-Null
 
-    Write-Host "[Pauk 1/5] Building app image pauk:latest (Node.js + deps + iputils-ping)..." -ForegroundColor Cyan
+    Write-Host "[Pauk 1/5] Building/updating app image pauk:latest from current project files..." -ForegroundColor Cyan
     docker build -f docker/Dockerfile -t pauk:latest .
-    if ($LASTEXITCODE -ne 0) { throw "Failed to build pauk:latest" }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "ERROR: Failed to build pauk:latest" -ForegroundColor Red
+        exit 1
+    }
     docker tag pauk:latest lan-calendar:latest
+
+    # If local lan-calendar container is currently running on the laptop, update it automatically with the new image
+    cmd /c "docker inspect lan-calendar >nul 2>nul"
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "[Pauk] Updating local running containers on laptop with new image..." -ForegroundColor Cyan
+        docker compose -f docker/docker-compose.yml -f docker/docker-compose.local.yml up -d --no-build lan-calendar codd-bot
+    }
 
     Write-Host "[Pauk 2/5] Saving image pauk:latest -> pauk.tar..." -ForegroundColor Cyan
     docker save -o (Join-Path $BundleDir "pauk.tar") pauk:latest
-    if ($LASTEXITCODE -ne 0) { throw "Failed to save pauk.tar" }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "ERROR: Failed to save pauk.tar" -ForegroundColor Red
+        exit 1
+    }
 
     Write-Host "[Pauk 3/5] Building and saving HTTPS proxy image pauk-caddy:latest (Caddy + iproute2)..." -ForegroundColor Cyan
     docker build -f docker/Dockerfile.caddy -t pauk-caddy:latest docker
-    if ($LASTEXITCODE -ne 0) { throw "Failed to build pauk-caddy:latest" }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "ERROR: Failed to build pauk-caddy:latest" -ForegroundColor Red
+        exit 1
+    }
     docker save -o (Join-Path $BundleDir "pauk-caddy.tar") pauk-caddy:latest
-    if ($LASTEXITCODE -ne 0) { throw "Failed to save pauk-caddy.tar" }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "ERROR: Failed to save pauk-caddy.tar" -ForegroundColor Red
+        exit 1
+    }
 
     if ($IncludeRobot) {
         Write-Host "[Pauk 4/5] Building and saving browser robot image pauk-robot:latest (Python + Playwright + Chromium)..." -ForegroundColor Cyan
         docker build -t pauk-robot:latest robot
-        if ($LASTEXITCODE -ne 0) { throw "Failed to build pauk-robot:latest" }
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "ERROR: Failed to build pauk-robot:latest" -ForegroundColor Red
+            exit 1
+        }
+        docker tag pauk-robot:latest lan-calendar-robot:latest
         docker save -o (Join-Path $BundleDir "pauk-robot.tar") pauk-robot:latest
-        if ($LASTEXITCODE -ne 0) { throw "Failed to save pauk-robot.tar" }
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "ERROR: Failed to save pauk-robot.tar" -ForegroundColor Red
+            exit 1
+        }
     } else {
         Write-Host "[Pauk 4/5] Mode 'app': skipping Chromium image build (will reuse existing image on server)..." -ForegroundColor Yellow
     }
@@ -144,7 +221,10 @@ tar -C /out -cf "/out/$ArchiveName" pauk-bundle
 
     $LinuxFinalizeClean = $LinuxFinalize -replace "`r", ""
     docker run --rm -v "${OutDir}:/out" pauk:latest sh -c $LinuxFinalizeClean
-    if ($LASTEXITCODE -ne 0) { throw "Failed to finalize offline bundle inside container" }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "ERROR: Failed to finalize offline bundle inside container" -ForegroundColor Red
+        exit 1
+    }
 
     $SizeMb = [math]::Round(((Get-Item $ArchivePath).Length / 1MB), 1)
     Write-Host ""

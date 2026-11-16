@@ -1,6 +1,7 @@
 # Universal offline bundle builder for Windows PowerShell 5.1 / 7+ (pure ASCII for encoding safety)
+# Automatically starts Docker Desktop if not running.
 # Usage:
-#   powershell -ExecutionPolicy Bypass -File .\scripts\offline\make_bundle.ps1 [pauk|pauk-app|app|robot|all] [output_dir]
+#   .\make_bundle.cmd [pauk|pauk-app|app|robot|all] [output_dir]
 
 param(
     [Parameter(Position = 0)]
@@ -10,7 +11,7 @@ param(
     [string]$OutDir = ""
 )
 
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Continue"
 
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 Set-Location $RepoRoot
@@ -38,11 +39,47 @@ switch ($What.ToLower()) {
     }
 }
 
-docker info *> $null
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "Docker is not running. Please start Docker Desktop and try again."
+function Test-DockerEngine {
+    cmd /c "docker info >nul 2>nul"
+    return ($LASTEXITCODE -eq 0)
+}
+
+function Ensure-DockerRunning {
+    if (Test-DockerEngine) {
+        Write-Host "[Docker] Engine is running." -ForegroundColor Green
+        return
+    }
+
+    Write-Host "[Docker] Docker Engine is not running yet. Searching for Docker Desktop..." -ForegroundColor Yellow
+    $Candidates = @(
+        (Join-Path $env:ProgramFiles "Docker\Docker\Docker Desktop.exe"),
+        "C:\Program Files\Docker\Docker\Docker Desktop.exe",
+        (Join-Path $env:LOCALAPPDATA "Docker\Docker Desktop.exe")
+    )
+    foreach ($p in $Candidates) {
+        if ($p -and (Test-Path $p)) {
+            Write-Host "[Docker] Starting Docker Desktop: $p" -ForegroundColor Cyan
+            Start-Process -FilePath $p
+            break
+        }
+    }
+
+    Write-Host "[Docker] Waiting for Docker Engine daemon to initialize (up to 120 seconds)..." -ForegroundColor Cyan
+    for ($i = 1; $i -le 40; $i++) {
+        Start-Sleep -Seconds 3
+        if (Test-DockerEngine) {
+            Write-Host ""
+            Write-Host "[Docker] Docker Engine is online and ready!" -ForegroundColor Green
+            return
+        }
+        Write-Host -NoNewline "."
+    }
+    Write-Host ""
+    Write-Host "ERROR: Docker Engine did not start within 120 seconds. Please open Docker Desktop manually." -ForegroundColor Red
     exit 1
 }
+
+Ensure-DockerRunning
 
 $Stamp = Get-Date -Format "yyyyMMdd"
 $AppStamp = Get-Date -Format "yyyyMMdd-HHmm"
@@ -56,11 +93,16 @@ function Build-AppBundle {
 
     Write-Host "[app 1/3] Building image lan-calendar:latest..." -ForegroundColor Cyan
     docker build -f docker/Dockerfile -t lan-calendar:latest .
-    if ($LASTEXITCODE -ne 0) { throw "Failed to build lan-calendar:latest" }
+    if ($LASTEXITCODE -ne 0) { exit 1 }
+
+    cmd /c "docker inspect lan-calendar >nul 2>nul"
+    if ($LASTEXITCODE -eq 0) {
+        docker compose -f docker/docker-compose.yml -f docker/docker-compose.local.yml up -d --no-build lan-calendar codd-bot
+    }
 
     Write-Host "[app 2/3] Saving image..." -ForegroundColor Cyan
     docker save -o (Join-Path $B "lan-calendar.tar") lan-calendar:latest
-    if ($LASTEXITCODE -ne 0) { throw "Failed to save lan-calendar.tar" }
+    if ($LASTEXITCODE -ne 0) { exit 1 }
 
     Write-Host "[app 3/3] Packaging archive..." -ForegroundColor Cyan
     foreach ($f in @("Dockerfile","Dockerfile.caddy","Caddyfile","caddy-entrypoint.sh","docker-compose.yml","docker-compose.local.yml")) {
@@ -93,7 +135,7 @@ tar -C /out -cf "/out/$ArchiveName" lan-calendar-app
 "@
     $LinuxCmdClean = $LinuxCmd -replace "`r", ""
     docker run --rm -v "${OutDir}:/out" lan-calendar:latest sh -c $LinuxCmdClean
-    if ($LASTEXITCODE -ne 0) { throw "Failed to package $ArchiveName" }
+    if ($LASTEXITCODE -ne 0) { exit 1 }
     Write-Host "Ready: $(Join-Path $OutDir $ArchiveName)" -ForegroundColor Green
 }
 
@@ -104,11 +146,11 @@ function Build-RobotBundle {
 
     Write-Host "[robot 1/3] Building image lan-calendar-robot:latest (with Chromium)..." -ForegroundColor Cyan
     docker build -t lan-calendar-robot:latest robot
-    if ($LASTEXITCODE -ne 0) { throw "Failed to build lan-calendar-robot:latest" }
+    if ($LASTEXITCODE -ne 0) { exit 1 }
 
     Write-Host "[robot 2/3] Saving image..." -ForegroundColor Cyan
     docker save -o (Join-Path $B "yandex-robot.tar") lan-calendar-robot:latest
-    if ($LASTEXITCODE -ne 0) { throw "Failed to save yandex-robot.tar" }
+    if ($LASTEXITCODE -ne 0) { exit 1 }
 
     Write-Host "[robot 3/3] Packaging archive..." -ForegroundColor Cyan
     foreach ($f in @("Dockerfile","requirements.txt","server.py","constructor.py","forms.py","pagewait.py","README.md")) {
@@ -135,7 +177,7 @@ tar -C /out -cf "/out/$ArchiveName" yandex-robot
 "@
     $LinuxCmdClean = $LinuxCmd -replace "`r", ""
     docker run --rm -v "${OutDir}:/out" lan-calendar-robot:latest sh -c $LinuxCmdClean
-    if ($LASTEXITCODE -ne 0) { throw "Failed to package $ArchiveName" }
+    if ($LASTEXITCODE -ne 0) { exit 1 }
     Write-Host "Ready: $(Join-Path $OutDir $ArchiveName)" -ForegroundColor Green
 }
 
