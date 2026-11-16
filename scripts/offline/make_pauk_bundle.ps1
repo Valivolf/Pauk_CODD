@@ -1,8 +1,6 @@
-# Сборщик офлайн-дистрибутива «Паук» для Windows PowerShell (БЕЗ WSL и без Git Bash).
-#
-# Запуск в PowerShell из корня проекта:
+# Offline bundle builder for Pauk (Windows PowerShell 5.1 / 7+, pure ASCII for encoding safety)
+# Usage:
 #   powershell -ExecutionPolicy Bypass -File .\scripts\offline\make_pauk_bundle.ps1 full
-# или для облегчённого пакета без повторной упаковки браузера Chromium:
 #   powershell -ExecutionPolicy Bypass -File .\scripts\offline\make_pauk_bundle.ps1 app
 
 param(
@@ -26,10 +24,9 @@ if (-not (Test-Path $OutDir)) {
 }
 $OutDir = (Resolve-Path $OutDir).Path
 
-# Проверяем, что Docker Desktop запущен
 docker info *> $null
 if ($LASTEXITCODE -ne 0) {
-    Write-Error "Docker не запущен или недоступен. Запустите Docker Desktop и повторите попытку."
+    Write-Error "Docker is not running. Please start Docker Desktop and try again."
     exit 1
 }
 
@@ -49,32 +46,32 @@ function Build-PaukBundle {
     New-Item -ItemType Directory -Path (Join-Path $BundleDir "docker") -Force | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $BundleDir "robot") -Force | Out-Null
 
-    Write-Host "[Паук 1/5] Собираю образ приложения pauk:latest (Node.js + зависимости + iputils-ping)..." -ForegroundColor Cyan
+    Write-Host "[Pauk 1/5] Building app image pauk:latest (Node.js + deps + iputils-ping)..." -ForegroundColor Cyan
     docker build -f docker/Dockerfile -t pauk:latest .
-    if ($LASTEXITCODE -ne 0) { throw "Ошибка сборки образа pauk:latest" }
+    if ($LASTEXITCODE -ne 0) { throw "Failed to build pauk:latest" }
     docker tag pauk:latest lan-calendar:latest
 
-    Write-Host "[Паук 2/5] Сохраняю образ pauk:latest -> pauk.tar..." -ForegroundColor Cyan
+    Write-Host "[Pauk 2/5] Saving image pauk:latest -> pauk.tar..." -ForegroundColor Cyan
     docker save -o (Join-Path $BundleDir "pauk.tar") pauk:latest
-    if ($LASTEXITCODE -ne 0) { throw "Ошибка сохранения pauk.tar" }
+    if ($LASTEXITCODE -ne 0) { throw "Failed to save pauk.tar" }
 
-    Write-Host "[Паук 3/5] Собираю и сохраняю образ HTTPS-сервера pauk-caddy:latest (Caddy + iproute2)..." -ForegroundColor Cyan
+    Write-Host "[Pauk 3/5] Building and saving HTTPS proxy image pauk-caddy:latest (Caddy + iproute2)..." -ForegroundColor Cyan
     docker build -f docker/Dockerfile.caddy -t pauk-caddy:latest docker
-    if ($LASTEXITCODE -ne 0) { throw "Ошибка сборки образа pauk-caddy:latest" }
+    if ($LASTEXITCODE -ne 0) { throw "Failed to build pauk-caddy:latest" }
     docker save -o (Join-Path $BundleDir "pauk-caddy.tar") pauk-caddy:latest
-    if ($LASTEXITCODE -ne 0) { throw "Ошибка сохранения pauk-caddy.tar" }
+    if ($LASTEXITCODE -ne 0) { throw "Failed to save pauk-caddy.tar" }
 
     if ($IncludeRobot) {
-        Write-Host "[Паук 4/5] Собираю и сохраняю образ pauk-robot:latest (Python + Playwright + браузер Chromium внутри)..." -ForegroundColor Cyan
+        Write-Host "[Pauk 4/5] Building and saving browser robot image pauk-robot:latest (Python + Playwright + Chromium)..." -ForegroundColor Cyan
         docker build -t pauk-robot:latest robot
-        if ($LASTEXITCODE -ne 0) { throw "Ошибка сборки образа pauk-robot:latest" }
+        if ($LASTEXITCODE -ne 0) { throw "Failed to build pauk-robot:latest" }
         docker save -o (Join-Path $BundleDir "pauk-robot.tar") pauk-robot:latest
-        if ($LASTEXITCODE -ne 0) { throw "Ошибка сохранения pauk-robot.tar" }
+        if ($LASTEXITCODE -ne 0) { throw "Failed to save pauk-robot.tar" }
     } else {
-        Write-Host "[Паук 4/5] Режим 'app': пропускаю упаковку образа Chromium (на сервере будет использован уже установленный)..." -ForegroundColor Yellow
+        Write-Host "[Pauk 4/5] Mode 'app': skipping Chromium image build (will reuse existing image on server)..." -ForegroundColor Yellow
     }
 
-    Write-Host "[Паук 5/5] Комплектую конфиги, сжимаю образы, конвертирую окончания строк в LF и считаю SHA256..." -ForegroundColor Cyan
+    Write-Host "[Pauk 5/5] Copying configs, compressing images, normalizing LF line endings, and computing SHA256..." -ForegroundColor Cyan
 
     $DockerFiles = @(
         "Dockerfile",
@@ -112,11 +109,6 @@ function Build-PaukBundle {
     $ArchiveName = "${PkgPrefix}-${AppStamp}.tar"
     $ArchivePath = Join-Path $OutDir $ArchiveName
 
-    # Выполняем финализацию внутри Linux-контейнера pauk:latest:
-    # 1. Убираем \r (CRLF -> LF) во всех текстовых/shell-файлах, чтобы на Linux-сервере не было ошибок bash\r
-    # 2. Сжимаем .tar -> .tar.gz без повреждения бинарного потока PowerShell-пайпом
-    # 3. Считаем CODE.sha256 прямо по файлам внутри контейнера pauk:latest
-    # 4. Формируем SHA256SUMS и собираем итоговый .tar архив
     $LinuxFinalize = @"
 set -eu
 B=/out/pauk-bundle
@@ -152,14 +144,14 @@ tar -C /out -cf "/out/$ArchiveName" pauk-bundle
 
     $LinuxFinalizeClean = $LinuxFinalize -replace "`r", ""
     docker run --rm -v "${OutDir}:/out" pauk:latest sh -c $LinuxFinalizeClean
-    if ($LASTEXITCODE -ne 0) { throw "Ошибка финализации архива внутри контейнера" }
+    if ($LASTEXITCODE -ne 0) { throw "Failed to finalize offline bundle inside container" }
 
     $SizeMb = [math]::Round(((Get-Item $ArchivePath).Length / 1MB), 1)
     Write-Host ""
     Write-Host "==================================================================" -ForegroundColor Green
-    Write-Host " Готов офлайн-пакет «Паук»: $ArchivePath ($SizeMb МБ)" -ForegroundColor Green
-    Write-Host " Перенесите файл $ArchiveName на рабочий сервер и выполните:" -ForegroundColor Green
-    Write-Host "   tar -xf $ArchiveName && cd pauk-bundle && sudo bash install.sh" -ForegroundColor Yellow
+    Write-Host " Offline bundle ready: $ArchivePath ($SizeMb MB)" -ForegroundColor Green
+    Write-Host " Copy $ArchiveName to the Linux server and run:" -ForegroundColor Green
+    Write-Host "   tar -xf $ArchiveName ; cd pauk-bundle ; sudo bash install.sh" -ForegroundColor Yellow
     Write-Host "==================================================================" -ForegroundColor Green
 }
 
@@ -169,7 +161,7 @@ switch ($Mode.ToLower()) {
     "app"      { Build-PaukBundle -IncludeRobot $false -PkgPrefix "pauk-app"  }
     "pauk-app" { Build-PaukBundle -IncludeRobot $false -PkgPrefix "pauk-app"  }
     default {
-        Write-Host "Использование: .\make_pauk_bundle.cmd [full|app] [папка_вывода]" -ForegroundColor Yellow
+        Write-Host "Usage: .\make_pauk_bundle.cmd [full|app] [output_dir]" -ForegroundColor Yellow
         exit 1
     }
 }

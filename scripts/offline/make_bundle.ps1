@@ -1,12 +1,6 @@
-# Универсальный сборщик офлайн-архивов для Windows PowerShell (БЕЗ WSL и без Git Bash):
-#   powershell -ExecutionPolicy Bypass -File .\scripts\offline\make_bundle.ps1 [pauk|pauk-app|app|robot|all] [папка_вывода]
-#
-# Режимы:
-#   pauk     — полный архив «Паук» для параллельной установки в /opt/pauk на порт 8443 (Node.js + Caddy + Chromium)
-#   pauk-app — быстрый архив обновления «Паук» (Node.js + Caddy, без переупаковки Chromium)
-#   app      — обновление существующей установки lan-calendar (/opt/lan_calendar)
-#   robot    — отдельный архив робота Яндекс (образ с Chromium)
-#   all      — app + robot
+# Universal offline bundle builder for Windows PowerShell 5.1 / 7+ (pure ASCII for encoding safety)
+# Usage:
+#   powershell -ExecutionPolicy Bypass -File .\scripts\offline\make_bundle.ps1 [pauk|pauk-app|app|robot|all] [output_dir]
 
 param(
     [Parameter(Position = 0)]
@@ -29,7 +23,6 @@ if (-not (Test-Path $OutDir)) {
 }
 $OutDir = (Resolve-Path $OutDir).Path
 
-# Если выбран режим pauk / pauk-full / pauk-app — передаём управление make_pauk_bundle.ps1
 switch ($What.ToLower()) {
     "pauk" {
         & (Join-Path $PSScriptRoot "make_pauk_bundle.ps1") -Mode "full" -OutDir $OutDir
@@ -47,7 +40,7 @@ switch ($What.ToLower()) {
 
 docker info *> $null
 if ($LASTEXITCODE -ne 0) {
-    Write-Error "Docker не запущен или недоступен. Запустите Docker Desktop и повторите попытку."
+    Write-Error "Docker is not running. Please start Docker Desktop and try again."
     exit 1
 }
 
@@ -61,15 +54,15 @@ function Build-AppBundle {
     New-Item -ItemType Directory -Path (Join-Path $B "docker") -Force | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $B "robot") -Force | Out-Null
 
-    Write-Host "[приложение 1/3] Собираю образ lan-calendar:latest..." -ForegroundColor Cyan
+    Write-Host "[app 1/3] Building image lan-calendar:latest..." -ForegroundColor Cyan
     docker build -f docker/Dockerfile -t lan-calendar:latest .
-    if ($LASTEXITCODE -ne 0) { throw "Ошибка сборки lan-calendar:latest" }
+    if ($LASTEXITCODE -ne 0) { throw "Failed to build lan-calendar:latest" }
 
-    Write-Host "[приложение 2/3] Сохраняю образ..." -ForegroundColor Cyan
+    Write-Host "[app 2/3] Saving image..." -ForegroundColor Cyan
     docker save -o (Join-Path $B "lan-calendar.tar") lan-calendar:latest
-    if ($LASTEXITCODE -ne 0) { throw "Ошибка сохранения lan-calendar.tar" }
+    if ($LASTEXITCODE -ne 0) { throw "Failed to save lan-calendar.tar" }
 
-    Write-Host "[приложение 3/3] Комплектую файлы и собираю архив..." -ForegroundColor Cyan
+    Write-Host "[app 3/3] Packaging archive..." -ForegroundColor Cyan
     foreach ($f in @("Dockerfile","Dockerfile.caddy","Caddyfile","caddy-entrypoint.sh","docker-compose.yml","docker-compose.local.yml")) {
         Copy-Item (Join-Path $RepoRoot "docker\$f") (Join-Path $B "docker\$f") -Force
     }
@@ -100,8 +93,8 @@ tar -C /out -cf "/out/$ArchiveName" lan-calendar-app
 "@
     $LinuxCmdClean = $LinuxCmd -replace "`r", ""
     docker run --rm -v "${OutDir}:/out" lan-calendar:latest sh -c $LinuxCmdClean
-    if ($LASTEXITCODE -ne 0) { throw "Ошибка упаковки $ArchiveName" }
-    Write-Host "Готово: $(Join-Path $OutDir $ArchiveName)" -ForegroundColor Green
+    if ($LASTEXITCODE -ne 0) { throw "Failed to package $ArchiveName" }
+    Write-Host "Ready: $(Join-Path $OutDir $ArchiveName)" -ForegroundColor Green
 }
 
 function Build-RobotBundle {
@@ -109,15 +102,15 @@ function Build-RobotBundle {
     if (Test-Path $B) { Remove-Item -Path $B -Recurse -Force }
     New-Item -ItemType Directory -Path (Join-Path $B "robot") -Force | Out-Null
 
-    Write-Host "[робот 1/3] Собираю образ lan-calendar-robot:latest (с браузером Chromium)..." -ForegroundColor Cyan
+    Write-Host "[robot 1/3] Building image lan-calendar-robot:latest (with Chromium)..." -ForegroundColor Cyan
     docker build -t lan-calendar-robot:latest robot
-    if ($LASTEXITCODE -ne 0) { throw "Ошибка сборки lan-calendar-robot:latest" }
+    if ($LASTEXITCODE -ne 0) { throw "Failed to build lan-calendar-robot:latest" }
 
-    Write-Host "[робот 2/3] Сохраняю образ..." -ForegroundColor Cyan
+    Write-Host "[robot 2/3] Saving image..." -ForegroundColor Cyan
     docker save -o (Join-Path $B "yandex-robot.tar") lan-calendar-robot:latest
-    if ($LASTEXITCODE -ne 0) { throw "Ошибка сохранения yandex-robot.tar" }
+    if ($LASTEXITCODE -ne 0) { throw "Failed to save yandex-robot.tar" }
 
-    Write-Host "[робот 3/3] Собираю архив..." -ForegroundColor Cyan
+    Write-Host "[robot 3/3] Packaging archive..." -ForegroundColor Cyan
     foreach ($f in @("Dockerfile","requirements.txt","server.py","constructor.py","forms.py","pagewait.py","README.md")) {
         Copy-Item (Join-Path $RepoRoot "robot\$f") (Join-Path $B "robot\$f") -Force
     }
@@ -142,8 +135,8 @@ tar -C /out -cf "/out/$ArchiveName" yandex-robot
 "@
     $LinuxCmdClean = $LinuxCmd -replace "`r", ""
     docker run --rm -v "${OutDir}:/out" lan-calendar-robot:latest sh -c $LinuxCmdClean
-    if ($LASTEXITCODE -ne 0) { throw "Ошибка упаковки $ArchiveName" }
-    Write-Host "Готово: $(Join-Path $OutDir $ArchiveName)" -ForegroundColor Green
+    if ($LASTEXITCODE -ne 0) { throw "Failed to package $ArchiveName" }
+    Write-Host "Ready: $(Join-Path $OutDir $ArchiveName)" -ForegroundColor Green
 }
 
 switch ($What.ToLower()) {
@@ -151,7 +144,7 @@ switch ($What.ToLower()) {
     "robot" { Build-RobotBundle }
     "all"   { Build-AppBundle; Build-RobotBundle }
     default {
-        Write-Host "Использование: .\make_bundle.cmd [pauk|pauk-app|app|robot|all] [папка_вывода]" -ForegroundColor Yellow
+        Write-Host "Usage: .\make_bundle.cmd [pauk|pauk-app|app|robot|all] [output_dir]" -ForegroundColor Yellow
         exit 1
     }
 }
