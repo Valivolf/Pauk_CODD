@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Нет доступа — {{ app_name }}</title>
+<link rel="icon" type="image/png" sizes="32x32" href="{{ asset_url('static/favicon-32x32.png') }}">
+<link rel="stylesheet" href="{{ asset_url('static/css/tailwind.min.css') }}">
+<link rel="stylesheet" href="{{ asset_url('static/css/theme.css') }}">
+<script>
+  try {
+    var d = document.documentElement, t = localStorage.getItem('theme'), m = localStorage.getItem('themeMode'), v = localStorage.getItem('themeVars');
+    var os = !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches);
+    var light = t === 'auto' ? os : (m ? m === 'light' : (t === 'light' || (!t && os)));
+    if (light) d.setAttribute('data-theme', 'light');
+    if (v && t !== 'auto') d.style.cssText = v;
+  } catch (e) {}
+</script>
+</head>
+<body class="min-h-screen flex items-center justify-center p-6">
+  <div class="w-full max-w-md animate-fade-in">
+    <div class="glass rounded-3xl p-8 shadow-xl space-y-4 text-center">
+      <div class="mx-auto h-12 w-12 rounded-2xl bg-amber-500/15 border border-amber-400/30 grid place-items-center">
+        <svg viewBox="0 0 24 24" class="h-6 w-6 text-amber-300" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>
+      </div>
+      <h1 class="font-display text-xl font-extrabold text-slate-50">Нет доступа</h1>
+      <p class="text-sm text-slate-300">Вы вошли как <b>{{ username }}</b>{% if role_name %} (роль «{{ role_name }}»){% endif %}, но этой роли пока не доступен ни один раздел.</p>
+      <p class="text-sm text-slate-400">Обратитесь к администратору системы: он выберет, что вам доступно.</p>
+      <button id="noAccessLogout" type="button" class="w-full rounded-xl bg-indigo-500 hover:bg-indigo-400 text-white font-semibold py-2.5 text-sm transition-all duration-300">Выйти</button>
+    </div>
+  </div>
+  <script src="{{ asset_url('static/js/theme.js') }}"></script>
+  <script src="{{ asset_url('static/js/no_access.js') }}"></script>
+</body>
+</html>

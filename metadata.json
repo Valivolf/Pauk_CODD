@@ -1,0 +1,6 @@
+{
+  "name": "Календарь работ — ЦОДД",
+  "description": "Система планирования выездов бригад, учёта АПК, склада оборудования, мониторинга и отчётов.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

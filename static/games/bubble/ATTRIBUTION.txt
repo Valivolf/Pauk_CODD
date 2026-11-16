@@ -1,0 +1,3 @@
+Игра «Пузырьковый стрелок» основана на html5-game-bubble-shooter от gamelabz.
+Источник: https://github.com/gamelabz/html5-game-bubble-shooter
+Исходная лицензия MIT сохранена в LICENSE.txt. Код интерфейса и управления адаптирован для русского языка, сенсорного ввода и таблицы рекордов приложения.

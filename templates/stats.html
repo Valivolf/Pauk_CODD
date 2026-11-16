@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Статистика — {{ app_name }}</title>
+<link rel="icon" type="image/png" sizes="32x32" href="{{ asset_url('static/favicon-32x32.png') }}">
+<link rel="icon" type="image/png" sizes="16x16" href="{{ asset_url('static/favicon-16x16.png') }}">
+<link rel="apple-touch-icon" href="{{ asset_url('static/apple-touch-icon.png') }}">
+<link rel="stylesheet" href="{{ asset_url('static/css/tailwind.min.css') }}">
+<link rel="stylesheet" href="{{ asset_url('static/css/theme.css') }}">
+<script>
+  try {
+    var d = document.documentElement, t = localStorage.getItem('theme'), m = localStorage.getItem('themeMode'), v = localStorage.getItem('themeVars');
+    var os = !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches);
+    var light = t === 'auto' ? os : (m ? m === 'light' : (t === 'light' || (!t && os)));
+    if (light) d.setAttribute('data-theme', 'light');
+    if (v && t !== 'auto') d.style.cssText = v;
+    var f = localStorage.getItem('fxLevel'); if (f && f !== 'auto') d.setAttribute('data-fx', f);
+    var a = localStorage.getItem('themeAttrs'); if (a && t !== 'auto') a.split(';').forEach(function (p) { var kv = p.split('='); if (kv[0] && kv[1]) d.setAttribute('data-' + kv[0], kv[1]); });
+    if (localStorage.getItem('bgPhoto')) d.setAttribute('data-bgphoto', '1');
+  } catch (e) {}
+</script>
+<style>
+  /* Chart palette — dark is the default (no data-theme attribute, matches
+     theme.js); light overrides under [data-theme="light"]. Categorical
+     "vt-*" (visit types) and "rs-*" (visit result) hues are the
+     dataviz-skill reference palette, re-validated against this app's own
+     surfaces (#0f172a dark / #f8fafc light) with scripts/validate_palette.js —
+     every bar also carries a direct text label, so a close adjacent pair
+     is never the only way to tell two bars apart. */
+  :root {
+    --vt-1: #3987e5; --vt-2: #d95926; --vt-3: #199e70; --vt-4: #c98500; --vt-5: #d55181;
+    --vt-6: #008300; --vt-7: #9085e9; --vt-8: #e66767; --vt-9: #0284c7;
+    --rs-working: #008300; --rs-dismantled: #c98500; --rs-installed: #3987e5; --rs-broken: #e66767;
+    --chart-ink: #cbd5e1; --chart-track: rgba(148,163,184,0.18);
+  }
+  [data-theme="light"] {
+    --vt-1: #2a78d6; --vt-2: #eb6834; --vt-3: #1baf7a; --vt-4: #eda100; --vt-5: #e87ba4;
+    --vt-6: #008300; --vt-7: #4a3aa7; --vt-8: #e34948; --vt-9: #0369a1;
+    --rs-working: #008300; --rs-dismantled: #eda100; --rs-installed: #2a78d6; --rs-broken: #e34948;
+    --chart-ink: #475569; --chart-track: rgba(100,116,139,0.18);
+  }
+  .chart-svg { width: 100%; overflow: visible; }
+  .chart-label { font-size: 3.6px; fill: var(--chart-ink); }
+  .chart-value { font-size: 3.6px; fill: var(--chart-ink); font-weight: 600; }
+  .chart-track { fill: var(--chart-track); }
+  .chart-row { cursor: default; }
+  .chart-tooltip {
+    display: none; position: fixed; z-index: 50; pointer-events: none;
+    background: rgba(15,23,42,0.95); color: #f8fafc; font-size: 12px;
+    padding: 4px 8px; border-radius: 8px; border: 1px solid rgba(148,163,184,0.3);
+  }
+  [data-theme="light"] .chart-tooltip { background: rgba(15,23,42,0.92); }
+</style>
+</head>
+<body class="min-h-screen">
+<div class="max-w-[1200px] mx-auto p-4 md:p-6 space-y-6">
+
+  <header class="relative z-30 glass rounded-3xl px-5 py-4 shadow-xl flex flex-wrap items-center justify-between gap-4">
+    <div class="flex items-center gap-3">
+      <div class="h-10 w-10 rounded-2xl bg-indigo-500/15 border border-indigo-400/30 grid place-items-center shrink-0">
+        <svg viewBox="0 0 24 24" class="h-5 w-5 text-indigo-400" fill="none" stroke="currentColor" stroke-width="1.8">
+          <path d="M4 19V9M11 19V4M18 19v-7"/>
+        </svg>
+      </div>
+      <div>
+        <h1 class="font-display text-lg font-extrabold text-slate-50 leading-tight">Статистика</h1>
+        <p class="text-xs text-slate-400">{{ app_name }}</p>
+      </div>
+    </div>
+
+    <div class="flex flex-wrap items-center gap-2">
+      <a href="/" data-perm="calendar.view" class="rounded-xl px-3.5 py-2 text-sm font-medium bg-slate-800/70 hover:bg-slate-700/70 border border-slate-700 transition-all duration-300 hover:scale-[1.02]">← Календарь</a>
+      <a id="warehousePageLink" data-perm-show="warehouse.view" href="/warehouse" class="hidden rounded-xl px-3.5 py-2 text-sm font-medium bg-slate-800/70 hover:bg-slate-700/70 border border-slate-700 transition-all duration-300 hover:scale-[1.02]">Склад →</a>
+      <button id="themeToggle" title="Сменить тему" class="h-9 w-9 rounded-xl bg-slate-800/70 hover:bg-slate-700/70 border border-slate-700 grid place-items-center transition-all duration-300 hover:scale-[1.05]">
+        <svg id="themeIconMoon" viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+        <svg id="themeIconSun" viewBox="0 0 24 24" class="h-4 w-4 hidden" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+      </button>
+      <div class="relative">
+        <button id="userMenuBtn" class="rounded-xl pl-3 pr-2.5 py-2 text-sm font-medium bg-indigo-500/15 hover:bg-indigo-500/25 border border-indigo-400/30 transition-all duration-300 hover:scale-[1.02] flex items-center gap-2">
+          <span id="userLabel">…</span>
+          <svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+        </button>
+        <div id="userMenu" class="hidden absolute right-0 mt-2 w-56 glass rounded-2xl shadow-xl p-2 z-20 space-y-1">
+          <button id="changePwBtn" class="w-full text-left px-3 py-2 rounded-xl text-sm hover:bg-slate-700/50 transition-colors">Сменить пароль</button>
+          <div class="my-1 border-t border-slate-700/60"></div>
+          <button id="logoutBtn" class="w-full text-left px-3 py-2 rounded-xl text-sm text-rose-300 hover:bg-rose-500/10 transition-colors">Выйти</button>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main id="content" class="glass rounded-3xl p-6 md:p-8 shadow-xl">
+    <p class="text-sm text-slate-500">Загрузка…</p>
+  </main>
+</div>
+
+<div id="modal"></div>
+
+<script src="{{ asset_url('static/js/theme.js') }}"></script>
+<script src="{{ asset_url('static/js/bgphoto.js') }}"></script>
+<script src="{{ asset_url('static/js/fx.js') }}"></script>
+<script src="{{ asset_url('static/js/seasons.js') }}"></script>
+<script src="{{ asset_url('static/js/sounds.js') }}"></script>
+<script src="{{ asset_url('static/js/api.js') }}"></script>
+<script src="{{ asset_url('static/js/ui.js') }}"></script>
+<script src="{{ asset_url('static/js/chat.js') }}"></script>
+<script src="{{ asset_url('static/js/broadcast.js') }}"></script>
+<script src="{{ asset_url('static/js/charts.js') }}"></script>
+<script src="{{ asset_url('static/js/stat_counters.js') }}"></script>
+<script src="{{ asset_url('static/js/stats.js') }}"></script>
+</body>
+</html>

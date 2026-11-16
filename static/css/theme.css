@@ -1,0 +1,529 @@
+/* Self-hosted fonts — no external CDN, works fully offline on the LAN. */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 400 600;
+  font-display: swap;
+  src: url('/static/fonts/inter-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+2000-206F, U+20AC, U+2122;
+}
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 400 600;
+  font-display: swap;
+  src: url('/static/fonts/inter-cyrillic.woff2') format('woff2');
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+@font-face {
+  font-family: 'Manrope';
+  font-style: normal;
+  font-weight: 500 800;
+  font-display: swap;
+  src: url('/static/fonts/manrope-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+2000-206F, U+20AC, U+2122;
+}
+@font-face {
+  font-family: 'Manrope';
+  font-style: normal;
+  font-weight: 500 800;
+  font-display: swap;
+  src: url('/static/fonts/manrope-cyrillic.woff2') format('woff2');
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+
+:root {
+  --accent: 99 102 241; /* indigo-500 */
+  --accent-strong: 79 70 229; /* indigo-600 */
+  /* Categorical palette for work types (tasks.type, VISIT_TYPES) — shared
+     across the calendar's task dots and /stats' charts so the same type
+     always reads as the same colour everywhere. See /stats for how this
+     was validated against the app's own dark/light surfaces. */
+  --vt-1: #3987e5; --vt-2: #d95926; --vt-3: #199e70; --vt-4: #c98500; --vt-5: #d55181;
+  --vt-6: #008300; --vt-7: #9085e9; --vt-8: #e66767; --vt-9: #0284c7;
+
+  /* ---- Палитра темы (static/js/theme.js подменяет эти переменные целиком) ----
+     Утилиты Tailwind slate-* и indigo-* собраны на них (scripts/tailwind/tailwind.config.js): тёмные поверхности, текст,
+     границы — slate; акцент (кнопки, выделение, ссылки) — indigo. Значения — тройки R G B. По умолчанию — прежняя тёмная тема. */
+  --slate-50: 248 250 252; --slate-100: 241 245 249; --slate-200: 226 232 240; --slate-300: 203 213 225; --slate-400: 148 163 184;
+  --slate-500: 100 116 139; --slate-600: 71 85 105; --slate-700: 51 65 85; --slate-800: 30 41 59; --slate-900: 15 23 42; --slate-950: 2 6 23;
+  --indigo-50: 238 242 255; --indigo-100: 224 231 255; --indigo-200: 199 210 254; --indigo-300: 165 180 252; --indigo-400: 129 140 248;
+  --indigo-500: 99 102 241; --indigo-600: 79 70 229; --indigo-700: 67 56 202; --indigo-800: 55 48 163; --indigo-900: 49 46 129; --indigo-950: 30 27 75;
+  /* Фон страницы, карточки, поля ввода */
+  --bg-base: 8 11 20; --glow-1: 99 102 241; --glow-1-a: .10; --glow-2: 16 185 129; --glow-2-a: .06;
+  --text: 226 232 240;
+  --glass-1: 30 41 59; --glass-1-a: .88; --glass-2: 15 23 42; --glass-2-a: .9; --glass-border: 148 163 184; --glass-border-a: .10;
+  --field-bg: 15 23 42; --field-bg-a: .7; --field-border: 51 65 85; --field-text: 226 232 240; --placeholder: 100 116 139;
+  --scroll: 51 65 85;
+}
+
+[data-theme="light"] {
+  --vt-1: #2a78d6; --vt-2: #eb6834; --vt-3: #1baf7a; --vt-4: #eda100; --vt-5: #e87ba4;
+  --vt-6: #008300; --vt-7: #4a3aa7; --vt-8: #e34948; --vt-9: #0369a1;
+  --bg-base: 246 248 252; --glow-1-a: .07; --glow-2-a: .05;
+  --text: 30 41 59;
+  --glass-1: 255 255 255; --glass-1-a: .95; --glass-2: 248 250 252; --glass-2-a: .95; --glass-border: 100 116 139; --glass-border-a: .15;
+  --field-bg: 255 255 255; --field-bg-a: .9; --field-border: 203 213 225; --field-text: 30 41 59; --placeholder: 148 163 184;
+  --scroll: 203 213 225;
+  /* Поверхности светлой темы: на них перекрашиваются тёмные utility-классы (см. ниже) */
+  --l-bg-soft: 241 245 249; --l-surface: 255 255 255; --l-surface-2: 248 250 252; --l-surface-3: 226 232 240; --l-surface-4: 203 213 225;
+  --l-border: 203 213 225; --l-text-strong: 15 23 42; --l-text: 51 65 85; --l-muted: 100 116 139; --l-hover: 238 242 255;
+}
+
+* { scrollbar-width: thin; scrollbar-color: rgb(var(--scroll)) transparent; }
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-thumb { background: rgb(var(--scroll)); border-radius: 999px; }
+
+/* Фон страницы. Раньше градиент лежал на самом body высотой в один экран, и у длинных (прокручиваемых) страниц он за границей экрана
+   начинался заново — на стыке была резкая полоса. Теперь цвет — на html, а цветные «пятна» — на отдельном слое, закреплённом за окном
+   (не прокручивается и не перерисовывается при прокрутке): стыка нет вообще. Размер шрифта интерфейса (--lc-fs) и скругление
+   (--lc-rs, в сборке Tailwind) задаются в конструкторе тем. */
+html { height: 100%; background: rgb(var(--bg-base)); transition: background-color .2s ease; font-size: calc(16px * var(--lc-fs, 1)); }
+body {
+  height: 100%;
+  font-family: 'Inter', system-ui, sans-serif;
+  background: transparent;
+  color: rgb(var(--text));
+  transition: color .2s ease;
+}
+body::before {
+  content: ''; position: fixed; inset: 0; z-index: -3; pointer-events: none;
+  background: radial-gradient(circle at 15% 0%, rgb(var(--glow-1) / var(--glow-1-a)), transparent 45%),
+              radial-gradient(circle at 85% 10%, rgb(var(--glow-2) / var(--glow-2-a)), transparent 40%);
+}
+/* Своё фото вместо градиента (static/js/bgphoto.js): слой лежит под погодой и содержимым страницы */
+html[data-bgphoto] body::before { display: none; }
+#lcBgPhoto { position: fixed; inset: -28px; z-index: -2; pointer-events: none; background-size: cover; background-position: center; background-repeat: no-repeat; }
+.font-display { font-family: 'Manrope', system-ui, sans-serif; letter-spacing: -0.02em; }
+
+/* No backdrop-filter here on purpose — it used to be blur(14px), but a
+   live backdrop blur is one of the most GPU-expensive things a browser can
+   do, and with several .glass panels on screen at once (header, cards,
+   modal) plus content scrolling/updating behind them (5s polling, long
+   point lists), it kept the GPU busy continuously. The higher background
+   opacity below keeps the same "solid dark card" look without it. */
+.glass {
+  background: linear-gradient(180deg, rgb(var(--glass-1) / var(--glass-1-a)), rgb(var(--glass-2) / var(--glass-2-a)));
+  border: 1px solid rgb(var(--glass-border) / var(--glass-border-a));
+}
+
+.accent-ring:focus { outline: none; box-shadow: 0 0 0 3px rgb(var(--indigo-500) / 0.35); }
+
+@keyframes fade-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+.animate-fade-in { animation: fade-in .25s ease-out; }
+
+@keyframes pulse-dot { 0%,100% { opacity:1 } 50% { opacity:.35 } }
+.animate-pulse-dot { animation: pulse-dot 1.6s ease-in-out infinite; }
+
+input, select, textarea {
+  background: rgb(var(--field-bg) / var(--field-bg-a));
+  border: 1px solid rgb(var(--field-border));
+  color: rgb(var(--field-text));
+}
+input::placeholder, textarea::placeholder { color: rgb(var(--placeholder)); }
+input:focus, select:focus, textarea:focus { border-color: rgb(var(--indigo-500)); }
+
+::selection { background: rgb(var(--indigo-500) / 0.35); }
+
+/* ---- Light-theme repaint of the fixed set of dark utility classes ---- */
+/* Structural colors above cover the page chrome; these cover the Tailwind
+   utility classes used directly in templates/JS for cards, buttons, text
+   and borders, so the same markup works under both themes. Цвета берутся из
+   переменных --l-* (их тоже подменяют светлые темы: «Бумага», «Мята» и т. д.). */
+[data-theme="light"] .bg-slate-950\/70 { background-color: rgb(var(--l-bg-soft) / 0.85) !important; }
+[data-theme="light"] .bg-slate-900\/40 { background-color: rgb(var(--l-surface-2) / 0.9) !important; }
+[data-theme="light"] .bg-slate-800\/70 { background-color: rgb(var(--l-surface) / 0.9) !important; }
+[data-theme="light"] .bg-slate-800\/40 { background-color: rgb(var(--l-surface) / 0.7) !important; }
+[data-theme="light"] .bg-slate-800\/30 { background-color: rgb(var(--l-surface-2) / 0.9) !important; }
+[data-theme="light"] .bg-slate-700\/60 { background-color: rgb(var(--l-surface-3) / 0.8) !important; }
+[data-theme="light"] .bg-slate-600\/60 { background-color: rgb(var(--l-surface-4) / 0.8) !important; }
+[data-theme="light"] .bg-slate-600 { background-color: rgb(var(--l-surface-4)) !important; }
+[data-theme="light"] .text-slate-50 { color: rgb(var(--l-text-strong)) !important; }
+[data-theme="light"] .text-slate-300 { color: rgb(var(--l-text)) !important; }
+[data-theme="light"] .text-slate-400 { color: rgb(var(--l-muted)) !important; }
+[data-theme="light"] .text-slate-500 { color: rgb(var(--l-muted)) !important; }
+[data-theme="light"] .border-slate-700 { border-color: rgb(var(--l-border)) !important; }
+[data-theme="light"] .border-slate-700\/60 { border-color: rgb(var(--l-border) / 0.8) !important; }
+[data-theme="light"] .border-slate-700\/50 { border-color: rgb(var(--l-border) / 0.7) !important; }
+[data-theme="light"] .border-slate-700\/40 { border-color: rgb(var(--l-border) / 0.6) !important; }
+[data-theme="light"] .bg-indigo-500\/15 { background-color: rgb(var(--indigo-500) / 0.12) !important; }
+[data-theme="light"] .bg-indigo-500\/20 { background-color: rgb(var(--indigo-500) / 0.14) !important; }
+[data-theme="light"] .border-indigo-400\/30 { border-color: rgb(var(--indigo-500) / 0.35) !important; }
+[data-theme="light"] .border-indigo-400\/50 { border-color: rgb(var(--indigo-500) / 0.45) !important; }
+[data-theme="light"] .text-indigo-300 { color: rgb(var(--indigo-600)) !important; }
+[data-theme="light"] .text-indigo-400 { color: rgb(var(--indigo-600)) !important; }
+[data-theme="light"] .shadow-indigo-500\/10 { box-shadow: 0 10px 15px -3px rgb(var(--indigo-500) / 0.12), 0 4px 6px -4px rgb(var(--indigo-500) / 0.12) !important; }
+[data-theme="light"] .shadow-indigo-500\/25 { box-shadow: 0 10px 15px -3px rgb(var(--indigo-500) / 0.2), 0 4px 6px -4px rgb(var(--indigo-500) / 0.2) !important; }
+[data-theme="light"] .bg-rose-500\/10 { background-color: rgb(244 63 94 / 0.12) !important; }
+[data-theme="light"] .bg-rose-500\/15 { background-color: rgb(244 63 94 / 0.14) !important; }
+[data-theme="light"] .border-rose-500\/30 { border-color: rgb(244 63 94 / 0.4) !important; }
+[data-theme="light"] .text-rose-300 { color: rgb(225 29 72) !important; }
+
+/* ---- Поле даты «ДД-ММ-ГГГГ» (см. enhanceDateInput в ui.js) ---- */
+/* Родной <input type=date> остаётся в DOM невидимым — он источник значения
+   и валидации, и якорь для календаря; пользователь видит текстовое поле с
+   маской и кнопку календаря. */
+.date-input { position: relative; display: inline-block; vertical-align: middle; }
+.date-input.date-input-block { display: block; }
+.date-input .date-input-native {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  opacity: 0; pointer-events: none;
+}
+.date-input .date-input-text { padding-right: 2rem; font-variant-numeric: tabular-nums; }
+.date-input .date-input-btn {
+  position: absolute; right: .3rem; top: 50%; transform: translateY(-50%);
+  display: grid; place-items: center; width: 1.6rem; height: 1.6rem;
+  border-radius: .5rem; border: 0; background: transparent;
+  color: rgb(var(--slate-400)); cursor: pointer; transition: color .2s, background-color .2s;
+}
+.date-input .date-input-btn:hover { color: rgb(var(--indigo-200)); background: rgb(var(--indigo-500) / 0.15); }
+[data-theme="light"] .date-input .date-input-btn { color: rgb(var(--l-muted)); }
+[data-theme="light"] .date-input .date-input-btn:hover { color: rgb(var(--indigo-700)); background: rgb(var(--indigo-500) / 0.12); }
+.date-input .date-input-text.date-input-invalid { border-color: rgb(244 63 94); }
+
+/* ---- Светлая тема: выпадающие списки подсказок и наведение ---- */
+/* Списки подсказок (поиск на карте «Все АПК», категория в формах) собраны из
+   тёмных utility-классов: фон bg-slate-800 и подсветка при наведении
+   hover:bg-slate-700/* — без этих правил в светлой теме они оставались
+   тёмными. */
+[data-theme="light"] .bg-slate-800 { background-color: rgb(var(--l-surface)) !important; }
+[data-theme="light"] .bg-slate-800\/20 { background-color: rgb(var(--l-surface-2) / 0.9) !important; }
+[data-theme="light"] .bg-slate-700\/50 { background-color: rgb(var(--l-surface-3) / 0.7) !important; }
+[data-theme="light"] .shadow-xl { box-shadow: 0 10px 25px -5px rgb(15 23 42 / 0.15), 0 8px 10px -6px rgb(15 23 42 / 0.1) !important; }
+[data-theme="light"] .hover\:bg-slate-700\/40:hover,
+[data-theme="light"] .hover\:bg-slate-700\/50:hover,
+[data-theme="light"] .hover\:bg-slate-700\/60:hover,
+[data-theme="light"] .hover\:bg-slate-700\/70:hover { background-color: rgb(var(--l-hover)) !important; }
+[data-theme="light"] .hover\:bg-slate-600\/60:hover { background-color: rgb(var(--l-surface-4) / 0.8) !important; }
+[data-theme="light"] .hover\:text-slate-100:hover { color: rgb(var(--l-text-strong)) !important; }
+[data-theme="light"] .divide-slate-700\/40 > :not([hidden]) ~ :not([hidden]) { border-color: rgb(var(--l-border) / 0.6) !important; }
+[data-theme="light"] .text-emerald-300 { color: rgb(4 120 87) !important; }
+[data-theme="light"] .text-sky-300 { color: rgb(3 105 161) !important; }
+[data-theme="light"] .text-indigo-200 { color: rgb(var(--indigo-700)) !important; }
+[data-theme="light"] .text-amber-300\/90 { color: rgb(180 83 9) !important; }
+[data-theme="light"] .bg-emerald-500\/15 { background-color: rgb(16 185 129 / 0.14) !important; }
+[data-theme="light"] .bg-emerald-500\/10 { background-color: rgb(16 185 129 / 0.1) !important; }
+[data-theme="light"] .bg-amber-500\/10 { background-color: rgb(245 158 11 / 0.12) !important; }
+[data-theme="light"] .border-emerald-500\/30 { border-color: rgb(16 185 129 / 0.4) !important; }
+[data-theme="light"] .border-amber-500\/30 { border-color: rgb(245 158 11 / 0.45) !important; }
+
+/* ---- Конструктор отчётов (/reports/builder) ---- */
+/* Лист («бумага») остаётся белым в обеих темах — как будет выглядеть документ. */
+.rb-layout { display: grid; gap: 1rem; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 1100px) { .rb-layout { grid-template-columns: 250px minmax(0, 1fr) 240px; align-items: start; } }
+.rb-side { position: sticky; top: .75rem; max-height: calc(100vh - 1.5rem); overflow: auto; }
+.rb-card { border: 1px solid rgb(51 65 85 / 0.6); border-radius: .9rem; background: rgb(30 41 59 / 0.3); padding: .75rem; }
+[data-theme="light"] .rb-card { border-color: rgb(203 213 225 / 0.8); background: rgb(248 250 252 / 0.9); }
+.rb-card h3 { font-size: .7rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: rgb(100 116 139); margin-bottom: .5rem; }
+
+.rb-chip {
+  display: inline-flex; align-items: center; gap: .25rem; max-width: 100%;
+  border-radius: .5rem; padding: .2rem .5rem; font-size: 11px; line-height: 1.25;
+  background: rgb(99 102 241 / 0.16); color: rgb(199 210 254); border: 1px solid rgb(99 102 241 / 0.35);
+  cursor: grab; user-select: none; text-align: left;
+}
+.rb-chip:hover { background: rgb(99 102 241 / 0.3); }
+.rb-chip:active { cursor: grabbing; }
+.rb-chip.rb-chip-crew { background: rgb(16 185 129 / 0.14); color: rgb(167 243 208); border-color: rgb(16 185 129 / 0.35); }
+.rb-chip.rb-chip-task { background: rgb(245 158 11 / 0.14); color: rgb(253 230 138); border-color: rgb(245 158 11 / 0.35); }
+[data-theme="light"] .rb-chip { color: rgb(55 48 163); }
+[data-theme="light"] .rb-chip.rb-chip-crew { color: rgb(4 120 87); }
+[data-theme="light"] .rb-chip.rb-chip-task { color: rgb(146 64 14); }
+
+.rb-paper { background: #ffffff; color: #0f172a; border-radius: .75rem; padding: .9rem; box-shadow: 0 1px 4px rgb(0 0 0 / 0.3); overflow-x: auto; }
+.rb-section { border: 1.5px dashed #94a3b8; border-radius: .7rem; margin-bottom: .9rem; background: #f8fafc; }
+.rb-section.rb-repeat { border-color: #6366f1; background: #eef2ff; }
+.rb-section-head { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; padding: .45rem .6rem; border-bottom: 1px dashed #cbd5e1; font-size: 12px; color: #334155; }
+.rb-section-head input[type="text"], .rb-section-head select, .rb-section-head input[type="number"] {
+  background: #ffffff !important; color: #0f172a !important; border: 1px solid #cbd5e1 !important; border-radius: .5rem; padding: .2rem .45rem; font-size: 12px;
+}
+.rb-section-body { padding: .6rem; }
+.rb-block { position: relative; margin-bottom: .55rem; padding-left: 1.5rem; }
+.rb-block-tools { position: absolute; left: 0; top: 0; display: flex; flex-direction: column; gap: 2px; opacity: .35; transition: opacity .15s; }
+.rb-block:hover .rb-block-tools, .rb-block:focus-within .rb-block-tools { opacity: 1; }
+.rb-mini {
+  width: 20px; height: 20px; display: inline-grid; place-items: center; border-radius: .35rem; border: 1px solid #cbd5e1;
+  background: #ffffff; color: #475569; font-size: 11px; line-height: 1; cursor: pointer; padding: 0;
+}
+.rb-mini:hover { background: #e0e7ff; color: #3730a3; border-color: #a5b4fc; }
+.rb-mini.rb-on { background: #6366f1; color: #fff; border-color: #6366f1; }
+.rb-handle { cursor: grab; }
+.rb-drop { height: 8px; margin: -2px 0; border-radius: 4px; transition: background .1s, height .1s; }
+.rb-drop.rb-over { height: 14px; background: #6366f1; opacity: .55; }
+.rb-add { display: flex; flex-wrap: wrap; gap: .35rem; align-items: center; padding-top: .15rem; }
+.rb-add button { font-size: 11px; padding: .2rem .55rem; border-radius: .5rem; border: 1px dashed #94a3b8; background: #ffffff; color: #475569; cursor: pointer; }
+.rb-add button:hover { border-color: #6366f1; color: #3730a3; background: #e0e7ff; }
+
+.rb-table { border-collapse: collapse; width: 100%; table-layout: fixed; background: #fff; }
+.rb-table td, .rb-table th { border: 1px solid #cbd5e1; padding: 0; vertical-align: top; position: relative; }
+.rb-table.rb-noborder td { border-style: dashed; border-color: #e2e8f0; }
+.rb-table th.rb-gutter { width: 84px; background: #f1f5f9; border-color: #e2e8f0; font-weight: 400; vertical-align: middle; }
+.rb-table th.rb-colhead { background: #f1f5f9; border-color: #e2e8f0; font-weight: 400; font-size: 10px; color: #64748b; padding: 2px; }
+.rb-table td.rb-sel { outline: 2px solid #6366f1; outline-offset: -2px; background-image: linear-gradient(rgb(99 102 241 / 0.13), rgb(99 102 241 / 0.13)); }
+.rb-table tr.rb-repeat-row td { box-shadow: inset 3px 0 0 #f59e0b; }
+.rb-table tr.rb-repeat-row th.rb-gutter { background: #fef3c7; }
+.rb-gutter-in { display: flex; align-items: center; justify-content: center; gap: 2px; padding: 2px; }
+.rb-colhead-in { display: flex; align-items: center; justify-content: center; gap: 2px; flex-wrap: wrap; }
+.rb-colhead input[type="number"] { width: 46px; background: #ffffff !important; color: #0f172a !important; border: 1px solid #cbd5e1 !important; border-radius: .35rem; padding: 0 3px; font-size: 10px; }
+
+.rb-paper textarea.rb-cell, .rb-paper textarea.rb-text {
+  display: block; width: 100%; border: 0 !important; background: transparent !important; color: inherit; font: inherit;
+  resize: none; overflow: hidden; padding: 4px 6px; outline: none; box-shadow: none !important; border-radius: 0; min-height: 26px; line-height: 1.35;
+}
+.rb-paper textarea.rb-text { border: 1px dashed #e2e8f0 !important; border-radius: .4rem; }
+.rb-paper textarea.rb-text:focus { border-color: #6366f1 !important; }
+.rb-paper textarea.rb-cell::placeholder, .rb-paper textarea.rb-text::placeholder { color: #94a3b8; }
+.rb-spacer { border: 1px dashed #cbd5e1; border-radius: .4rem; color: #64748b; font-size: 11px; padding: .25rem .5rem; display: flex; align-items: center; gap: .5rem; }
+.rb-spacer input[type="number"] { width: 52px; background: #fff !important; color: #0f172a !important; border: 1px solid #cbd5e1 !important; border-radius: .35rem; padding: 0 4px; }
+
+.rb-tool-btn {
+  min-width: 30px; height: 30px; display: inline-grid; place-items: center; border-radius: .5rem; padding: 0 .4rem; font-size: 13px;
+  background: rgb(30 41 59 / 0.7); border: 1px solid rgb(51 65 85); color: rgb(226 232 240); cursor: pointer;
+}
+.rb-tool-btn:hover { background: rgb(51 65 85 / 0.9); }
+.rb-tool-btn.rb-on { background: #6366f1; border-color: #6366f1; color: #fff; }
+.rb-tool-btn[disabled] { opacity: .4; cursor: default; }
+[data-theme="light"] .rb-tool-btn { background: #ffffff; border-color: #cbd5e1; color: #334155; }
+[data-theme="light"] .rb-tool-btn:hover { background: #e0e7ff; }
+[data-theme="light"] .rb-tool-btn.rb-on { background: #6366f1; border-color: #6366f1; color: #fff; }
+.rb-swatch { width: 20px; height: 20px; border-radius: .35rem; border: 1px solid rgb(100 116 139 / 0.6); cursor: pointer; padding: 0; }
+.rb-swatch:hover { outline: 2px solid #6366f1; }
+
+.rb-preview-wrap { position: fixed; inset: 0; z-index: 40; background: rgb(2 6 23 / 0.75); display: grid; place-items: center; padding: 1rem; }
+.rb-preview-box { width: min(1200px, 100%); max-height: 94vh; overflow: auto; border-radius: 1.25rem; padding: 1.25rem; }
+.rb-pv-table { border-collapse: collapse; width: 100%; table-layout: fixed; background: #fff; color: #0f172a; margin: 0; }
+.rb-pv-table td { border: 1px solid #94a3b8; padding: 3px 6px; vertical-align: top; white-space: pre-wrap; word-break: break-word; }
+.rb-pv-table.rb-noborder td { border-color: transparent; }
+.rb-pv-text { white-space: pre-wrap; word-break: break-word; margin: 0; padding: 2px 0; }
+.rb-pv-break { border-top: 2px dashed #94a3b8; margin: .8rem 0; text-align: center; font-size: 10px; color: #94a3b8; }
+
+/* ---- Светлая тема: выбор дней для выгрузки на календаре ---- */
+[data-theme="light"] .bg-emerald-500\/20 { background-color: rgb(16 185 129 / 0.16) !important; }
+[data-theme="light"] .text-emerald-200 { color: rgb(4 120 87) !important; }
+[data-theme="light"] .border-emerald-400\/60 { border-color: rgb(5 150 105 / 0.6) !important; }
+[data-theme="light"] .border-emerald-400\/40 { border-color: rgb(5 150 105 / 0.45) !important; }
+[data-theme="light"] .shadow-emerald-500\/10 { box-shadow: 0 10px 15px -3px rgb(16 185 129 / 0.15), 0 4px 6px -4px rgb(16 185 129 / 0.15) !important; }
+[data-theme="light"] .hover\:bg-emerald-500\/30:hover { background-color: rgb(16 185 129 / 0.26) !important; }
+
+
+/* Перенос бригады: пока выбирается день, клетки календаря подсвечиваются при наведении */
+#cal.move-mode [data-day] { cursor: crosshair; }
+#cal.move-mode [data-day]:hover { border-color: rgba(251, 191, 36, .85) !important; background-color: rgba(245, 158, 11, .22) !important; }
+
+/* ================================================================== */
+/* Анимации, оформление меню тем и облегчение нагрузки (static/js/fx.js, theme.js) */
+/* ================================================================== */
+
+/* Анимируем только то, что браузер делает на видеокарте (transform, opacity, цвет) — но не размеры и не положение:
+   прежний «transition: all» перерисовывал бы вёрстку при каждом наведении. */
+.transition-all {
+  transition-property: color, background-color, border-color, box-shadow, transform, opacity, fill, stroke;
+}
+
+/* Строки длинных списков, которых нет на экране, не отрисовываются, пока до них не доскроллили. */
+#apkList > *, #whList > *, #points > *, #nfList > *, #monList > * {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 132px;
+}
+
+/* Плавные переходы между страницами (браузеры с поддержкой view transitions; остальные просто игнорируют). */
+@view-transition { navigation: auto; }
+::view-transition-old(root), ::view-transition-new(root) { animation-duration: .22s; }
+
+/* Появление блоков при загрузке страницы — по очереди (--i задаёт fx.js) */
+@keyframes lc-rise-in { from { opacity: 0; transform: translateY(14px) scale(.985); } to { opacity: 1; transform: none; } }
+.lc-rise { animation: lc-rise-in .5s cubic-bezier(.2, .8, .2, 1) both; animation-delay: calc(var(--i, 0) * 55ms); }
+
+/* Окна «выпрыгивают» мягко, с лёгким перелётом */
+@keyframes lc-pop-in { 0% { opacity: 0; transform: translateY(10px) scale(.94); } 60% { opacity: 1; transform: translateY(-2px) scale(1.008); } 100% { opacity: 1; transform: none; } }
+.lc-pop { animation: lc-pop-in .32s cubic-bezier(.2, .9, .3, 1.1) both; }
+
+/* Нажатие: кнопки чуть «продавливаются», карточки списков приподнимаются при наведении */
+button:not(:disabled):active, a[class*="rounded"]:active { transform: scale(.97); }
+#apkList > *, #whList > *, #points > *, #nfList > * { transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease; }
+#apkList > *:hover, #whList > *:hover, #points > *:hover, #nfList > *:hover { transform: translateY(-1px); box-shadow: 0 8px 22px -12px rgb(0 0 0 / .5); }
+
+/* Волна от нажатия (fx.js, только при «Эффекты: полные») */
+.lc-ripple { position: absolute; border-radius: 50%; pointer-events: none; background: rgb(255 255 255 / .28); transform: scale(0); animation: lc-ripple .55s ease-out forwards; }
+[data-theme="light"] .lc-ripple { background: rgb(var(--indigo-500) / .22); }
+@keyframes lc-ripple { to { transform: scale(1); opacity: 0; } }
+
+/* Строки списков появляются мягко */
+@keyframes lc-row-in { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
+.lc-row-in { animation: lc-row-in .26s ease-out both; }
+
+/* ---- Уровни эффектов ---- */
+html[data-fx="lite"] .lc-rise { animation-duration: .25s; animation-delay: 0s; }
+html[data-fx="lite"] .lc-pop { animation-duration: .16s; }
+html[data-fx="lite"] ::view-transition-old(root), html[data-fx="lite"] ::view-transition-new(root) { animation-duration: .1s; }
+html[data-fx="off"] *, html[data-fx="off"] *::before, html[data-fx="off"] *::after {
+  animation: none !important; transition: none !important; scroll-behavior: auto !important;
+}
+html[data-fx="off"] #apkList > *:hover, html[data-fx="off"] #whList > *:hover, html[data-fx="off"] #points > *:hover, html[data-fx="off"] #nfList > *:hover { transform: none; box-shadow: none; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; scroll-behavior: auto !important; }
+}
+
+/* ---- Меню «Оформление» (static/js/theme.js) ---- */
+.lc-menu {
+  position: fixed; z-index: 60; overflow: auto; padding: 12px; border-radius: 18px;
+  background: rgb(var(--glass-2) / .99); border: 1px solid rgb(var(--glass-border) / .28);
+  box-shadow: 0 22px 50px -14px rgb(0 0 0 / .55); color: rgb(var(--text)); font-size: 13px;
+  animation: lc-pop-in .22s cubic-bezier(.2, .9, .3, 1.1) both;
+}
+.lc-hd { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; font-size: 14px; }
+.lc-x { border: 0; background: transparent; color: inherit; opacity: .7; cursor: pointer; font-size: 15px; padding: 2px 8px; border-radius: 8px; }
+.lc-x:hover { opacity: 1; background: rgb(var(--indigo-500) / .15); }
+.lc-sec { margin: 10px 0 6px; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; opacity: .6; }
+.lc-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.lc-card {
+  position: relative; display: flex; flex-direction: column; gap: 5px; border: 1px solid rgb(var(--glass-border) / .22); border-radius: 12px;
+  background: transparent; padding: 6px; cursor: pointer; color: inherit; text-align: center;
+  transition: transform .15s ease, border-color .15s ease, box-shadow .15s ease;
+}
+.lc-card:hover { transform: translateY(-2px); border-color: rgb(var(--indigo-500) / .6); }
+.lc-card.lc-on { border-color: rgb(var(--indigo-500)); box-shadow: 0 0 0 2px rgb(var(--indigo-500) / .35); }
+.lc-sw { position: relative; display: block; height: 38px; border-radius: 8px; overflow: hidden; border: 1px solid rgb(128 128 128 / .28); }
+.lc-sw i { position: absolute; left: 6px; right: 6px; bottom: 5px; height: 14px; border-radius: 5px; opacity: .95; }
+.lc-sw b { position: absolute; right: 9px; top: 6px; width: 10px; height: 10px; border-radius: 50%; }
+.lc-auto { background: linear-gradient(90deg, #080b14 50%, #f6f8fc 50%); }
+.lc-auto i { background: linear-gradient(90deg, #1e293b 50%, #ffffff 50%); }
+.lc-auto b { background: #6366f1; }
+.lc-plus { display: grid; place-items: center; font-size: 20px; background: transparent; }
+.lc-nm { font-size: 11px; line-height: 1.2; }
+.lc-card u { position: absolute; top: 2px; right: 4px; font-size: 10px; text-decoration: none; opacity: 0; cursor: pointer; padding: 1px 4px; border-radius: 6px; background: rgb(0 0 0 / .55); color: #fff; }
+.lc-card:hover u { opacity: .95; }
+.lc-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 6px 0; }
+.lc-segs { display: inline-flex; border: 1px solid rgb(var(--glass-border) / .28); border-radius: 10px; overflow: hidden; }
+.lc-seg { border: 0; background: transparent; color: inherit; padding: 4px 9px; font-size: 12px; cursor: pointer; }
+.lc-seg.lc-on { background: rgb(var(--indigo-500)); color: #fff; }
+.lc-sel { max-width: 190px; border-radius: 10px; padding: 4px 8px; font-size: 12px; }
+.lc-note { margin-top: 6px; font-size: 11px; opacity: .65; }
+.lc-f { display: grid; gap: 4px; margin: 9px 0; font-size: 12px; }
+.lc-f input[type=text] { border-radius: 10px; padding: 6px 9px; }
+.lc-f input[type=range] { width: 100%; accent-color: rgb(var(--indigo-500)); }
+.lc-hue { background: linear-gradient(90deg, #f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00) !important; height: 8px; border-radius: 6px; -webkit-appearance: none; appearance: none; border: 0 !important; }
+.lc-hue::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; border-radius: 50%; background: #fff; border: 2px solid rgb(var(--indigo-500)); cursor: pointer; }
+.lc-btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+.lc-btn { border: 1px solid rgb(var(--glass-border) / .3); background: transparent; color: inherit; border-radius: 10px; padding: 6px 12px; cursor: pointer; }
+.lc-pri { background: rgb(var(--indigo-500)); border-color: transparent; color: #fff; }
+
+/* «Частично на складе»: что именно лежит на складе — в карточке комплекса (список «Все АПК», окно на карте, календарь, форма правки) */
+.lc-stock { background: rgba(251, 191, 36, .12); border: 1px solid rgba(251, 191, 36, .32); color: #fde68a; }
+:root[data-theme="light"] .lc-stock { background: #fffbeb; border-color: #fcd34d; color: #92400e; }
+
+/* ---- Оформление кнопок: задаётся в конструкторе тем (static/js/theme.js). У встроенных тем этих атрибутов нет — вид прежний. ---- */
+html[data-btn="gradient"] :is(button, a).bg-indigo-500 { background-image: linear-gradient(135deg, rgb(var(--indigo-400)), rgb(var(--indigo-600))); }
+html[data-btn="gradient"] :is(button, a).bg-indigo-500:hover { filter: brightness(1.1); }
+html[data-btn="outline"] :is(button, a).bg-indigo-500 { background-color: transparent !important; color: rgb(var(--indigo-300)) !important; box-shadow: inset 0 0 0 1.5px rgb(var(--indigo-400)) !important; }
+html[data-btn="outline"] :is(button, a).bg-indigo-500:hover { background-color: rgb(var(--indigo-500) / .18) !important; }
+html[data-btn="outline"][data-theme="light"] :is(button, a).bg-indigo-500 { color: rgb(var(--indigo-700)) !important; }
+html[data-btn="glass"] :is(button, a).bg-indigo-500 { background-color: rgb(var(--indigo-500) / .26) !important; color: rgb(var(--indigo-100)) !important; box-shadow: inset 0 0 0 1px rgb(var(--indigo-400) / .55) !important; }
+html[data-btn="glass"] :is(button, a).bg-indigo-500:hover { background-color: rgb(var(--indigo-500) / .4) !important; }
+html[data-btn="glass"][data-theme="light"] :is(button, a).bg-indigo-500 { color: rgb(var(--indigo-800)) !important; }
+/* Свечение кнопок: без него / сильное (для «контурных» и «стеклянных» кнопок рамка своя) */
+html[data-glow="none"]:not([data-btn="outline"]):not([data-btn="glass"]) :is(button, a).bg-indigo-500 { box-shadow: none !important; }
+html[data-glow="strong"]:not([data-btn="outline"]):not([data-btn="glass"]) :is(button, a).bg-indigo-500 { box-shadow: 0 8px 30px -4px rgb(var(--indigo-500) / .6) !important; }
+/* Свой цвет кнопок (отдельно от акцента) */
+html[data-bhue] :is(button, a).bg-indigo-500 { background-color: rgb(var(--lc-b500)); }
+html[data-bhue] :is(button, a).bg-indigo-500:hover { background-color: rgb(var(--lc-b400)); }
+html[data-bhue][data-btn="gradient"] :is(button, a).bg-indigo-500 { background-image: linear-gradient(135deg, rgb(var(--lc-b400)), rgb(var(--lc-b600))); }
+html[data-bhue][data-btn="outline"] :is(button, a).bg-indigo-500, html[data-bhue][data-btn="glass"] :is(button, a).bg-indigo-500 { box-shadow: inset 0 0 0 1.5px rgb(var(--lc-b400)) !important; }
+html[data-bhue][data-btn="outline"] :is(button, a).bg-indigo-500 { color: rgb(var(--lc-b400)) !important; }
+html[data-bhue][data-btn="glass"] :is(button, a).bg-indigo-500 { background-color: rgb(var(--lc-b500) / .26) !important; color: rgb(var(--lc-b400)) !important; }
+html[data-bhue][data-theme="light"][data-btn="outline"] :is(button, a).bg-indigo-500, html[data-bhue][data-theme="light"][data-btn="glass"] :is(button, a).bg-indigo-500 { color: rgb(var(--lc-b600)) !important; }
+
+/* ---- Меню «Оформление»: фото-фон, снег, новые поля конструктора ---- */
+.lc-photos { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin: 6px 0; }
+.lc-ph { position: relative; aspect-ratio: 16 / 10; border-radius: 9px; overflow: hidden; border: 2px solid transparent; cursor: pointer; padding: 0; background: rgb(var(--slate-800)); }
+.lc-ph img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.lc-ph.lc-on { border-color: rgb(var(--indigo-400)); }
+.lc-ph u { position: absolute; top: 2px; right: 2px; width: 18px; height: 18px; border-radius: 50%; background: rgba(2, 6, 23, .75); color: #fff; font-size: 10px; display: grid; place-items: center; text-decoration: none; }
+.lc-ph.lc-none { display: grid; place-items: center; font-size: 11px; color: inherit; background: transparent; border: 1px dashed rgb(var(--glass-border) / .4); }
+.lc-ph.lc-add { display: grid; place-items: center; font-size: 20px; color: inherit; background: transparent; border: 1px dashed rgb(var(--glass-border) / .5); }
+.lc-fold { margin: 8px 0 2px; padding-top: 6px; border-top: 1px solid rgb(var(--glass-border) / .18); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; opacity: .6; }
+.lc-f .lc-val { font-variant-numeric: tabular-nums; opacity: .6; margin-left: 6px; }
+
+.lc-card u.lc-edit { right: auto; left: 4px; }
+
+/* Кнопки и разделы, на которые у роли нет права (static/js/ui.js: data-perm) */
+[data-perm-denied] { display: none !important; }
+
+/* «Данные загружаются…» / «Обновляю данные…» (static/js/ui.js: loadingHtml, setListLoading): мягкое мерцание, чтобы было видно, что идёт загрузка, а не «ничего нет» */
+.lc-pulse { animation: pulse-dot 1.6s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .lc-pulse { animation: none; } }
+
+/* ---- Игры (/games): карточки, «игровой стол», кнопки и плитки (static/js/games.js, games_impl.js, games_more.js) ---- */
+.lc-g-hero { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 20px; margin-bottom: 18px; border-radius: 22px; color: #fff;
+  background: linear-gradient(120deg, #4f46e5, #7c3aed 55%, #db2777); box-shadow: 0 14px 30px -16px rgba(99, 102, 241, .8); }
+.lc-g-hero b { font-size: 20px; font-weight: 800; }
+.lc-g-hero span { font-size: 13px; opacity: .9; }
+.lc-g-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+.lc-g-chip { border: 1px solid rgb(var(--glass-border) / .5); border-radius: 99px; padding: 6px 14px; font-size: 13px; font-weight: 600; cursor: pointer; background: transparent; color: inherit; transition: transform .12s, background .15s; }
+.lc-g-chip:hover { transform: translateY(-1px); }
+.lc-g-chip.lc-on { background: linear-gradient(135deg, #6366f1, #7c3aed); color: #fff; border-color: transparent; box-shadow: 0 6px 16px -6px rgba(99, 102, 241, .8); }
+.lc-g-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 16px; }
+.lc-g-card { position: relative; overflow: hidden; border-radius: 22px; padding: 16px; display: grid; gap: 10px; align-content: start; color: #f8fafc;
+  background: linear-gradient(155deg, hsl(var(--gh) 60% 40%), hsl(calc(var(--gh) + 35) 65% 20%)); box-shadow: 0 12px 26px -14px hsl(var(--gh) 70% 22%); transition: transform .18s, box-shadow .18s; }
+.lc-g-card:hover { transform: translateY(-4px); box-shadow: 0 18px 30px -14px hsl(var(--gh) 70% 22%); }
+.lc-g-card::after { content: ''; position: absolute; right: -34px; top: -34px; width: 120px; height: 120px; border-radius: 50%; background: rgba(255, 255, 255, .12); pointer-events: none; }
+.lc-g-ico { width: 58px; height: 58px; border-radius: 18px; display: grid; place-items: center; font-size: 32px; line-height: 1; background: rgba(255, 255, 255, .18); box-shadow: inset 0 2px 0 rgba(255, 255, 255, .35), 0 6px 14px rgba(0, 0, 0, .25); }
+.lc-g-card h3 { font-weight: 800; font-size: 16px; line-height: 1.2; }
+.lc-g-card p { font-size: 12px; opacity: .88; line-height: 1.35; min-height: 4.1em; }
+.lc-g-cat { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; opacity: .75; }
+.lc-g-best { font-size: 11px; font-weight: 700; padding: 3px 10px; border-radius: 99px; background: rgba(0, 0, 0, .3); width: fit-content; }
+.lc-g-row { display: flex; gap: 8px; align-items: center; }
+.lc-g-play { border: 0; border-radius: 14px; padding: 9px 18px; font-weight: 800; font-size: 14px; color: #0f172a; background: #fff; cursor: pointer; box-shadow: 0 4px 0 rgba(0, 0, 0, .25); transition: transform .1s, box-shadow .1s; }
+.lc-g-play:active { transform: translateY(2px); box-shadow: 0 2px 0 rgba(0, 0, 0, .25); }
+.lc-g-mini { border: 0; border-radius: 14px; padding: 9px 12px; background: rgba(0, 0, 0, .3); color: #fff; cursor: pointer; font-size: 14px; }
+.lc-g-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+.lc-g-title { display: flex; align-items: center; gap: 10px; font-weight: 800; font-size: 20px; }
+.lc-g-status { width: fit-content; max-width: 100%; margin: 0 auto 12px; padding: 6px 16px; border-radius: 99px; font-size: 14px; font-weight: 600; text-align: center; background: rgba(15, 23, 42, .78); color: #f1f5f9; min-height: 1.6em; }
+.lc-g-stage { position: relative; border-radius: 24px; padding: 18px 14px 22px; color: #f1f5f9; user-select: none; min-height: 260px; overflow: hidden;
+  background: radial-gradient(120% 90% at 50% 0%, hsl(var(--gh) 55% 30% / .85), transparent 70%), linear-gradient(170deg, hsl(var(--gh) 40% 17%), hsl(calc(var(--gh) + 40) 45% 9%));
+  box-shadow: 0 18px 40px -20px hsl(var(--gh) 70% 20%), inset 0 1px 0 rgba(255, 255, 255, .12); }
+.lc-g-text { color: rgba(241, 245, 249, .9); }
+.lc-g-intro { display: grid; gap: 14px; justify-items: center; text-align: center; padding: 18px 8px; }
+.lc-g-intro .lc-g-big { font-size: 72px; line-height: 1; animation: lc-g-float 2.4s ease-in-out infinite; filter: drop-shadow(0 8px 12px rgba(0, 0, 0, .35)); }
+.lc-g-go { border: 0; border-radius: 16px; padding: 12px 30px; font-size: 17px; font-weight: 800; color: #0f172a; background: linear-gradient(180deg, #fde68a, #f59e0b); cursor: pointer; box-shadow: 0 5px 0 #b45309; transition: transform .1s, box-shadow .1s; }
+.lc-g-go:active { transform: translateY(3px); box-shadow: 0 2px 0 #b45309; }
+.lc-g-btn { border: 0; cursor: pointer; color: #fff; background: linear-gradient(160deg, #6366f1, #4f46e5); box-shadow: 0 3px 0 rgba(0, 0, 0, .3); transition: transform .1s, filter .15s; }
+.lc-g-btn:hover { filter: brightness(1.12); }
+.lc-g-btn:active { transform: translateY(2px); box-shadow: 0 1px 0 rgba(0, 0, 0, .3); }
+.lc-g-btn:disabled { opacity: .45; cursor: default; filter: none; }
+.lc-g-tile { border: 0; border-radius: 12px; cursor: pointer; font-weight: 800; color: #fff; box-shadow: inset 0 -3px 0 rgba(0, 0, 0, .25), 0 3px 8px rgba(0, 0, 0, .3); transition: transform .12s, filter .12s, opacity .15s; user-select: none; touch-action: manipulation; }
+.lc-g-tile:hover:not(:disabled) { filter: brightness(1.12); }
+.lc-g-tile:active:not(:disabled) { transform: scale(.94); }
+.lc-g-tile:disabled { cursor: default; }
+.lc-g-shake { animation: lc-g-shake .35s; }
+.lc-g-result { margin-top: 16px; padding: 18px 20px; border-radius: 22px; color: #f1f5f9; text-align: center; background: linear-gradient(160deg, #1e293b, #0f172a); border: 2px solid rgba(148, 163, 184, .35); box-shadow: 0 16px 34px -18px rgba(0, 0, 0, .8); position: relative; overflow: hidden; }
+.lc-g-result.lc-g-record { border-color: #facc15; box-shadow: 0 0 0 4px rgba(250, 204, 21, .18), 0 16px 34px -14px rgba(250, 204, 21, .6); }
+.lc-g-result b { font-size: 22px; font-weight: 800; display: block; }
+.lc-g-result .lc-g-actions { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; margin-top: 14px; }
+.lc-g-conf { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+.lc-g-conf i { position: absolute; top: -16px; font-style: normal; animation: lc-g-fall 1.9s ease-in forwards; }
+@keyframes lc-g-shake { 0%, 100% { transform: translateX(0); } 20% { transform: translateX(-7px); } 60% { transform: translateX(7px); } }
+@keyframes lc-g-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-8px); } }
+@keyframes lc-g-fall { to { transform: translateY(460px) rotate(540deg); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .lc-g-intro .lc-g-big, .lc-g-shake, .lc-g-conf i { animation: none; } }
+.lc-g-status:empty { visibility: hidden; }
+.lc-g-grid { gap: 20px; }
+.lc-g-card { min-height: 320px; padding: 20px; border: 1px solid hsl(var(--gh) 75% 75% / .24); background: radial-gradient(120% 90% at 100% 0%, hsl(var(--gh) 75% 55% / .28), transparent 60%), linear-gradient(150deg, hsl(var(--gh) 36% 23% / .96), #111827 78%); box-shadow: 0 12px 28px -20px rgba(0, 0, 0, .8); transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease; }
+.lc-g-card:hover { border-color: hsl(var(--gh) 85% 72% / .6); box-shadow: 0 20px 38px -22px hsl(var(--gh) 85% 45% / .8); }
+.lc-g-card h3 { margin-top: 3px; font-size: 18px; letter-spacing: -.02em; }
+.lc-g-card p { min-height: 4.5em; font-size: 13px; }
+.lc-g-card .lc-g-ico { width: 64px; height: 64px; border: 1px solid rgba(255,255,255,.2); background: linear-gradient(145deg, rgba(255,255,255,.25), rgba(255,255,255,.07)); }
+.lc-g-card .lc-g-row { margin-top: auto; }
+.lc-g-card .lc-g-play { flex: 1; padding-block: 11px; background: linear-gradient(180deg, #fff, #dbeafe); }
+.lc-g-best { border: 1px solid rgba(255,255,255,.12); }
+.lc-g-external { display: block; width: 100%; height: min(76vh, 820px); min-height: 580px; border: 0; border-radius: 18px; background: #fff; }
+@media (max-width: 640px) { .lc-g-grid { grid-template-columns: 1fr; gap: 12px; } .lc-g-card { min-height: 0; } .lc-g-external { height: 72vh; min-height: 520px; } }
+.lc-report-archive-filters { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; }
+.lc-report-archive-search { grid-column: span 2; }
+@media (max-width: 1100px) { .lc-report-archive-filters { grid-template-columns: repeat(3, minmax(0, 1fr)); } .lc-report-archive-search { grid-column: span 3; } }
+@media (max-width: 640px) { .lc-report-archive-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); } .lc-report-archive-search { grid-column: span 2; } }
+.lc-report-archive-table { width: 100%; }
+.lc-report-archive-head { color: rgb(148 163 184); border-bottom: 1px solid rgb(148 163 184 / .2); }
+.lc-report-archive-row { vertical-align: top; border-bottom: 1px solid rgb(148 163 184 / .12); }
+.lc-report-archive-row:hover { background: rgb(148 163 184 / .06); }
+.lc-report-archive-comment { min-width: 12rem; max-width: 32rem; white-space: pre-wrap; }

@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{ app_name }}</title>
+<link rel="icon" type="image/png" sizes="32x32" href="{{ asset_url('static/favicon-32x32.png') }}">
+<link rel="icon" type="image/png" sizes="16x16" href="{{ asset_url('static/favicon-16x16.png') }}">
+<link rel="apple-touch-icon" href="{{ asset_url('static/apple-touch-icon.png') }}">
+<link rel="stylesheet" href="{{ asset_url('static/css/tailwind.min.css') }}">
+<link rel="stylesheet" href="{{ asset_url('static/css/theme.css') }}">
+<script>
+  try {
+    var d = document.documentElement, t = localStorage.getItem('theme'), m = localStorage.getItem('themeMode'), v = localStorage.getItem('themeVars');
+    var os = !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches);
+    var light = t === 'auto' ? os : (m ? m === 'light' : (t === 'light' || (!t && os)));
+    if (light) d.setAttribute('data-theme', 'light');
+    if (v && t !== 'auto') d.style.cssText = v;
+    var f = localStorage.getItem('fxLevel'); if (f && f !== 'auto') d.setAttribute('data-fx', f);
+    var a = localStorage.getItem('themeAttrs'); if (a && t !== 'auto') a.split(';').forEach(function (p) { var kv = p.split('='); if (kv[0] && kv[1]) d.setAttribute('data-' + kv[0], kv[1]); });
+    if (localStorage.getItem('bgPhoto')) d.setAttribute('data-bgphoto', '1');
+  } catch (e) {}
+</script>
+</head>
+<body class="min-h-screen">
+<div class="max-w-[1440px] mx-auto p-4 md:p-6 space-y-6">
+
+  <header class="relative z-30 glass rounded-3xl px-5 py-4 shadow-xl flex flex-wrap items-center justify-between gap-4">
+    <div class="flex items-center gap-3">
+      <div class="h-10 w-10 rounded-2xl bg-indigo-500/15 border border-indigo-400/30 grid place-items-center shrink-0">
+        <svg viewBox="0 0 24 24" class="h-5 w-5 text-indigo-400" fill="none" stroke="currentColor" stroke-width="1.8">
+          <rect x="3" y="4" width="18" height="17" rx="3"/><path d="M3 9h18M8 3v3M16 3v3"/>
+        </svg>
+      </div>
+      <div>
+        <h1 class="font-display text-lg font-extrabold text-slate-50 leading-tight">{{ app_name }}</h1>
+        <p class="text-xs text-slate-400 flex items-center gap-1.5">
+          <span id="statusDot" class="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse-dot"></span>
+          <span id="status">Подключение…</span>
+        </p>
+      </div>
+    </div>
+
+    <div class="flex flex-wrap items-center gap-2">
+      <div class="relative">
+        <button id="excelMenuBtn" data-perm="points.import,points.export,points.network,reports.edit,calendar.print" class="rounded-xl px-3.5 py-2 text-sm font-medium bg-slate-800/70 hover:bg-slate-700/70 border border-slate-700 transition-all duration-300 hover:scale-[1.02]">Документы ▾</button>
+        <div id="excelMenu" class="hidden absolute left-0 mt-2 w-72 glass rounded-2xl shadow-xl p-2 z-20 space-y-1">
+          <button id="docsPointsBtn" data-perm="points.import,points.export" class="w-full text-left px-3 py-2 rounded-xl text-sm hover:bg-slate-700/50 transition-colors" title="Шаблон Excel, импорт точек, выгрузка всех точек, импорт из «Паутины»">📍 Точки…</button>
+          <button id="docsSimBtn" data-perm="points.import,points.network" class="w-full text-left px-3 py-2 rounded-xl text-sm hover:bg-slate-700/50 transition-colors" title="Шаблон и загрузка таблицы SIM/IP, выгрузка SIM и IP в Excel">💳 SIM-карты…</button>
+          <button id="docsReportsBtn" data-perm="reports.edit" class="w-full text-left px-3 py-2 rounded-xl text-sm hover:bg-slate-700/50 transition-colors" title="Отчёты из таблицы Яндекс Форм, история выездов из Excel">📋 Отчёты и история выездов…</button>
+          <div class="my-1 border-t border-slate-700/60"></div>
+          <button id="planPrintBtn" data-perm="calendar.print" class="w-full text-left px-3 py-2 rounded-xl text-sm hover:bg-slate-700/50 transition-colors">🖨 План-задание всем бригадам (бланк, печать)</button>
+        </div>
+      </div>
+      <button id="mapBtn" data-perm="calendar.edit,calendar.print,maps.manage,points.export" class="rounded-xl px-3.5 py-2 text-sm font-medium bg-slate-800/70 hover:bg-slate-700/70 border border-slate-700 transition-all duration-300 hover:scale-[1.02]">Карты KML</button>
+      <a id="apkPageLink" data-perm-show="points.view" href="/apk" class="hidden rounded-xl px-3.5 py-2 text-sm font-medium bg-slate-800/70 hover:bg-slate-700/70 border border-slate-700 transition-all duration-300 hover:scale-[1.02]">Все АПК →</a>
+      <a id="warehousePageLink" data-perm-show="warehouse.view" href="/warehouse" class="hidden rounded-xl px-3.5 py-2 text-sm font-medium bg-slate-800/70 hover:bg-slate-700/70 border border-slate-700 transition-all duration-300 hover:scale-[1.02]">Склад →</a>
+      <a id="statsPageLink" data-perm-show="stats.view" href="/stats" class="hidden rounded-xl px-3.5 py-2 text-sm font-medium bg-slate-800/70 hover:bg-slate-700/70 border border-slate-700 transition-all duration-300 hover:scale-[1.02]">Статистика →</a>
+      <a id="reportsPageLink" data-perm-show="reports.view" href="/reports" class="hidden rounded-xl px-3.5 py-2 text-sm font-medium bg-slate-800/70 hover:bg-slate-700/70 border border-slate-700 transition-all duration-300 hover:scale-[1.02]">Отчёты →</a>
+      <a id="monitoringPageLink" data-perm-show="monitoring.view" href="/monitoring" class="hidden rounded-xl px-3.5 py-2 text-sm font-medium bg-slate-800/70 hover:bg-slate-700/70 border border-slate-700 transition-all duration-300 hover:scale-[1.02]">Мониторинг →</a>
+      <a id="notificationsPageLink" data-perm-show="notifications.view" href="/notifications" class="hidden rounded-xl px-3.5 py-2 text-sm font-medium bg-slate-800/70 hover:bg-slate-700/70 border border-slate-700 transition-all duration-300 hover:scale-[1.02]" title="История проверок и отчётов, комплексы, которые не заработали">🔔 Уведомления →</a>
+      <a id="assistantPageLink" href="/assistant" class="hidden rounded-xl px-3.5 py-2 text-sm font-medium bg-slate-800/70 hover:bg-slate-700/70 border border-slate-700 transition-all duration-300 hover:scale-[1.02]" title="Вопросы по данным и заполнение шаблонов Excel/Word">🤖 Помощник →</a>
+      <a id="absencesPageLink" data-perm-show="absences.view" href="/absences" class="hidden rounded-xl px-3.5 py-2 text-sm font-medium bg-slate-800/70 hover:bg-slate-700/70 border border-slate-700 transition-all duration-300 hover:scale-[1.02]" title="Кто в отпуске, на больничном и когда ближайшее отсутствие">Отсутствия →</a>
+
+      <div class="relative">
+        <button id="settingsMenuBtn" data-perm="people.edit,points.edit,bot.toggle,reports.edit,admin.settings,admin.system,admin.keys,admin.backup,admin.security" class="rounded-xl px-3.5 py-2 text-sm font-medium bg-slate-800/70 hover:bg-slate-700/70 border border-slate-700 transition-all duration-300 hover:scale-[1.02]">Настройки ▾</button>
+        <div id="settingsMenu" class="hidden absolute right-0 mt-2 w-72 glass rounded-2xl shadow-xl p-2 z-20 space-y-1">
+          <button id="peopleBtn" data-perm="people.edit" class="w-full text-left px-3 py-2 rounded-xl text-sm hover:bg-slate-700/50 transition-colors">Персонал</button>
+          <button id="categoriesBtn" data-perm="points.edit" class="w-full text-left px-3 py-2 rounded-xl text-sm hover:bg-slate-700/50 transition-colors">Категории АПК</button>
+          <button id="statusesBtn" data-perm="points.edit" class="w-full text-left px-3 py-2 rounded-xl text-sm hover:bg-slate-700/50 transition-colors">Статусы АПК</button>
+          <button id="workTypesBtn" data-perm="points.edit" class="w-full text-left px-3 py-2 rounded-xl text-sm hover:bg-slate-700/50 transition-colors">Типы выездов</button>
+          <button id="planTemplateSettingsBtn" data-perm="reports.edit" class="w-full text-left px-3 py-2 rounded-xl text-sm hover:bg-slate-700/50 transition-colors">📄 Шаблон план-наряда</button>
+          <button id="dupPointsBtn" data-perm="points.edit" class="w-full text-left px-3 py-2 rounded-xl text-sm hover:bg-slate-700/50 transition-colors" title="Один комплекс заведён несколько раз («НОМЕР +1»…): объединить, перенеся отчёты, фото и историю">Дубли комплексов…</button>
+          <button id="aiSettingsBtn" data-perm="admin.settings" class="w-full text-left px-3 py-2 rounded-xl text-sm hover:bg-slate-700/50 transition-colors" title="Голосовые итоги в боте и помощник: включить, проверить, посмотреть состояние">🤖 ИИ: голос и помощник…</button>
+          <button id="weatherSettingsBtn" data-perm="admin.settings" class="w-full text-left px-3 py-2 rounded-xl text-sm hover:bg-slate-700/50 transition-colors" title="Откуда брать погоду для фона, как часто запрашивать, город и ключ Яндекс.Погоды">Погода и фон…</button>
+          <div class="my-1 border-t border-slate-700/60"></div>
+          <button id="botToggleBtn" data-perm="bot.toggle" class="w-full text-left px-3 py-2 rounded-xl text-sm hover:bg-slate-700/50 transition-colors flex items-center justify-between gap-2">
+            <span>Бот VK</span>
+            <span id="botToggleStatus" class="text-xs font-medium">…</span>
+          </button>
+          <button id="yandexRobotBtn" data-perm="admin.settings" class="w-full text-left px-3 py-2 rounded-xl text-sm hover:bg-slate-700/50 transition-colors">🤖 Яндекс-аккаунт для карт</button>
+          <button id="yandexFormsBtn" data-perm="admin.settings" class="w-full text-left px-3 py-2 rounded-xl text-sm hover:bg-slate-700/50 transition-colors" title="Вход робота в Яндекс для Форм: скачивание фото из ответов и автоматическая загрузка отчётов из формы">📝 Яндекс Формы: вход и автозагрузка</button>
+          <div class="my-1 border-t border-slate-700/60"></div>
+          <button id="systemHealthBtn" data-perm="admin.system" class="w-full text-left px-3 py-2 rounded-xl text-sm hover:bg-slate-700/50 transition-colors" title="Диск, база и её копии, фоновые задачи, бот, робот, ИИ — всё ли в порядке">🩺 Состояние системы…</button>
+          <button id="encryptionBtn" data-perm="admin.keys" class="w-full text-left px-3 py-2 rounded-xl text-sm hover:bg-slate-700/50 transition-colors" title="Логины, пароли, ФИО и телефоны хранятся зашифрованными: состояние, показ ключа для резервной копии">🔑 Ключ шифрования…</button>
+          <button id="backup" data-perm="admin.backup" class="w-full text-left px-3 py-2 rounded-xl text-sm hover:bg-slate-700/50 transition-colors">Копия</button>
+          <button id="restore" data-perm="admin.backup" class="w-full text-left px-3 py-2 rounded-xl text-sm hover:bg-slate-700/50 transition-colors">Восстановить</button>
+          <button id="securityLogBtn" data-perm="admin.security" class="w-full text-left px-3 py-2 rounded-xl text-sm hover:bg-slate-700/50 transition-colors" title="Входы и отказы во входе, смена паролей, действия администратора, скачивание копий базы, отказы в доступе">🛡 Журнал безопасности…</button>
+        </div>
+      </div>
+      <button id="sysHealthChip" class="hidden rounded-xl px-3 py-2 text-sm font-medium bg-amber-500/15 hover:bg-amber-500/25 border border-amber-400/30 transition-colors" title="Состояние системы"></button>
+      <button id="themeToggle" title="Сменить тему" class="h-9 w-9 rounded-xl bg-slate-800/70 hover:bg-slate-700/70 border border-slate-700 grid place-items-center transition-all duration-300 hover:scale-[1.05]">
+        <svg id="themeIconMoon" viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+        <svg id="themeIconSun" viewBox="0 0 24 24" class="h-4 w-4 hidden" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+      </button>
+
+      <div class="relative">
+        <button id="userMenuBtn" class="rounded-xl pl-3 pr-2.5 py-2 text-sm font-medium bg-indigo-500/15 hover:bg-indigo-500/25 border border-indigo-400/30 transition-all duration-300 hover:scale-[1.02] flex items-center gap-2">
+          <span id="userLabel">…</span>
+          <svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+        </button>
+        <div id="userMenu" class="hidden absolute right-0 mt-2 w-56 glass rounded-2xl shadow-xl p-2 z-20 space-y-1">
+          <button id="changePwBtn" class="w-full text-left px-3 py-2 rounded-xl text-sm hover:bg-slate-700/50 transition-colors">Сменить пароль</button>
+          <button id="adminBtn" data-perm="admin.users" class="w-full text-left px-3 py-2 rounded-xl text-sm hover:bg-slate-700/50 transition-colors">Администрирование</button>
+          <div class="my-1 border-t border-slate-700/60"></div>
+          <button id="logoutBtn" class="w-full text-left px-3 py-2 rounded-xl text-sm text-rose-300 hover:bg-rose-500/10 transition-colors">Выйти</button>
+        </div>
+      </div>
+    </div>
+
+    <input type="file" id="file" accept=".db,.sqlite,.sqlite3" hidden>
+    <input type="file" id="excelFile" accept=".xlsx,.xlsm" hidden>
+    <input type="file" id="simImportFile" accept=".xlsx,.xlsm" hidden>
+    <input type="file" id="kmlFile" accept=".kml,application/vnd.google-earth.kml+xml" hidden>
+  </header>
+
+  <main class="grid grid-cols-1 xl:grid-cols-[1.15fr_.85fr] gap-6">
+    <section class="glass rounded-3xl p-6 md:p-8 shadow-xl space-y-5">
+      <div class="flex items-center justify-between gap-3">
+        <button id="prev" class="h-9 w-9 rounded-xl bg-slate-800/70 hover:bg-slate-700/70 border border-slate-700 grid place-items-center transition-all duration-300 hover:scale-[1.05]">‹</button>
+        <h2 id="month" class="font-display text-xl font-bold capitalize"></h2>
+        <div class="flex items-center gap-2">
+          <button id="today" class="rounded-xl px-3 py-1.5 text-xs font-medium bg-slate-800/70 hover:bg-slate-700/70 border border-slate-700 transition-all duration-300">Сегодня</button>
+          <button id="next" class="h-9 w-9 rounded-xl bg-slate-800/70 hover:bg-slate-700/70 border border-slate-700 grid place-items-center transition-all duration-300 hover:scale-[1.05]">›</button>
+        </div>
+      </div>
+      <div id="moveBar" class="hidden rounded-2xl border border-amber-500/30 bg-amber-500/10 p-3"></div>
+      <div class="grid grid-cols-7 gap-1.5 text-center text-xs font-medium text-slate-400">
+        <b>Пн</b><b>Вт</b><b>Ср</b><b>Чт</b><b>Пт</b><b>Сб</b><b>Вс</b>
+      </div>
+      <div class="grid grid-cols-7 gap-1.5" id="cal"></div>
+      <div id="exportBar" class="hidden rounded-2xl border border-emerald-400/40 bg-emerald-500/10 p-4 space-y-3"></div>
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <p class="text-xs text-slate-500">Данные обновляются каждые 5 секунд. При открытой форме обновление приостановлено.</p>
+        <button id="exportModeBtn" data-perm="reports.view" class="rounded-xl px-3 py-1.5 text-xs font-medium bg-slate-800/70 hover:bg-slate-700/70 border border-slate-700 transition-all duration-300" title="Отметить на календаре любые дни и выгрузить по ним бригады, задания и итоги (дни между крайними можно пропускать)">📅 Выбрать дни для выгрузки</button>
+      </div>
+    </section>
+
+    <div class="space-y-6">
+      <section class="glass rounded-3xl p-6 md:p-8 shadow-xl">
+        <div class="flex flex-wrap items-center justify-between gap-2 mb-4">
+          <h2 id="day" class="font-display text-lg font-bold capitalize"></h2>
+          <span class="flex flex-wrap items-center gap-2">
+            <button id="copyAllCrewsBtn" class="rounded-xl px-3 py-2 text-sm font-medium bg-slate-800/70 hover:bg-slate-700/70 border border-slate-700 transition-all duration-300" title="Скопировать текст всех бригад дня: место, работы, состав, ссылка на карту">📋 Текст бригад</button>
+            <button id="robotMapsAllBtn" data-perm="maps.manage" class="rounded-xl px-3 py-2 text-sm font-medium bg-slate-800/70 hover:bg-slate-700/70 border border-slate-700 transition-all duration-300" title="Создать или обновить карты всех бригад дня в Конструкторе карт Яндекса (ссылки лягут в бригады). Вообще карты обновляются сами — настройка в «Яндекс-аккаунт для карт»">🤖 Карты бригад</button>
+            <button id="addjob" data-perm="calendar.edit" class="rounded-xl px-3.5 py-2 text-sm font-semibold bg-indigo-500 hover:bg-indigo-400 text-white shadow-lg shadow-indigo-500/25 transition-all duration-300 hover:scale-[1.02]">+ Задание</button>
+          </span>
+        </div>
+        <div id="teams" class="space-y-3"></div>
+      </section>
+
+      <section class="glass rounded-3xl p-6 md:p-8 shadow-xl">
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="font-display text-lg font-bold">Точки на день</h2>
+          <button id="addpoint" data-perm="points.edit" class="rounded-xl px-3.5 py-2 text-sm font-semibold bg-indigo-500 hover:bg-indigo-400 text-white shadow-lg shadow-indigo-500/25 transition-all duration-300 hover:scale-[1.02]">+ Точка</button>
+        </div>
+        <div class="flex items-center gap-2 mb-3">
+          <input id="search" placeholder="Поиск по номеру, адресу, описанию" class="flex-1 min-w-0 rounded-xl px-3.5 py-2.5 text-sm accent-ring transition-all duration-300">
+          <select id="pointsCrewFilter" class="rounded-xl px-3 py-2.5 text-sm accent-ring transition-all duration-300 min-w-0" style="max-width:42%">
+            <option value="">Все бригады</option>
+          </select>
+        </div>
+        <div id="points" class="space-y-2 max-h-[420px] overflow-auto pr-1"></div>
+      </section>
+    </div>
+  </main>
+</div>
+
+<div id="modal"></div>
+
+<script src="{{ asset_url('static/js/theme.js') }}"></script>
+<script src="{{ asset_url('static/js/bgphoto.js') }}"></script>
+<script src="{{ asset_url('static/js/fx.js') }}"></script>
+<script src="{{ asset_url('static/js/seasons.js') }}"></script>
+<script src="{{ asset_url('static/js/sounds.js') }}"></script>
+<script src="{{ asset_url('static/js/api.js') }}"></script>
+<script src="{{ asset_url('static/js/ui.js') }}"></script>
+<script src="{{ asset_url('static/js/chat.js') }}"></script>
+<script src="{{ asset_url('static/js/account_chat.js') }}"></script>
+<script src="{{ asset_url('static/js/broadcast.js') }}"></script>
+<script src="{{ asset_url('static/js/point_card.js') }}"></script>
+<script src="{{ asset_url('static/js/report_form.js') }}"></script>
+<script src="{{ asset_url('static/js/forms_import.js') }}"></script>
+<script src="{{ asset_url('static/js/app.js') }}"></script>
+<script src="{{ asset_url('static/js/yandex_robot.js') }}"></script>
+<script src="{{ asset_url('static/js/forms_account.js') }}"></script>
+<script src="{{ asset_url('static/js/people.js') }}"></script>
+<script src="{{ asset_url('static/js/admin.js') }}"></script>
+<script src="{{ asset_url('static/js/visit_history.js') }}"></script>
+<script src="{{ asset_url('static/js/pautina_import.js') }}"></script>
+<script src="{{ asset_url('static/js/point_merge.js') }}"></script>
+<script src="{{ asset_url('static/js/sim_export.js') }}"></script>
+<script src="{{ asset_url('static/js/weather_settings.js') }}"></script>
+<script src="{{ asset_url('static/js/ai_settings.js') }}"></script>
+<script src="{{ asset_url('static/js/encryption_key.js') }}"></script>
+<script src="{{ asset_url('static/js/system_health.js') }}"></script>
+<script src="{{ asset_url('static/js/security_log.js') }}"></script>
+<script src="{{ asset_url('static/js/plan_template_settings.js') }}"></script>
+</body>
+</html>

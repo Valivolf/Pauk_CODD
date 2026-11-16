@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Пузырьковый стрелок</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main class="app">
+    <header class="topbar">
+      <h1>🫧 Пузырьковый стрелок</h1>
+      <p class="tagline">Прицельтесь, стреляйте и собирайте группы от трёх пузырей.</p>
+    </header>
+
+    <section class="hud" aria-label="Счёт игры">
+      <div class="stat"><span class="stat-label">Очки</span><span class="stat-value" id="score">0</span></div>
+      <div class="stat"><span class="stat-label">Выстрелы</span><span class="stat-value" id="shots">0</span></div>
+      <div class="stat"><span class="stat-label">Рекорд на устройстве</span><span class="stat-value" id="best">0</span></div>
+    </section>
+
+    <div class="stage">
+      <canvas id="game" width="480" height="560"></canvas>
+      <p class="message" id="message">Наведите указатель и нажмите, чтобы выстрелить.</p>
+    </div>
+
+    <footer class="controls">
+      <button class="btn" id="restart">Новая игра</button>
+    </footer>
+  </main>
+
+  <script src="game.js"></script>
+</body>
+</html>

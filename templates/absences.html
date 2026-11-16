@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Отсутствия — {{ app_name }}</title>
+<link rel="icon" type="image/png" sizes="32x32" href="{{ asset_url('static/favicon-32x32.png') }}">
+<link rel="icon" type="image/png" sizes="16x16" href="{{ asset_url('static/favicon-16x16.png') }}">
+<link rel="apple-touch-icon" href="{{ asset_url('static/apple-touch-icon.png') }}">
+<link rel="stylesheet" href="{{ asset_url('static/css/tailwind.min.css') }}">
+<link rel="stylesheet" href="{{ asset_url('static/css/theme.css') }}">
+<script>
+  try {
+    var d = document.documentElement, t = localStorage.getItem('theme'), m = localStorage.getItem('themeMode'), v = localStorage.getItem('themeVars');
+    var os = !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches);
+    var light = t === 'auto' ? os : (m ? m === 'light' : (t === 'light' || (!t && os)));
+    if (light) d.setAttribute('data-theme', 'light');
+    if (v && t !== 'auto') d.style.cssText = v;
+    var f = localStorage.getItem('fxLevel'); if (f && f !== 'auto') d.setAttribute('data-fx', f);
+    var a = localStorage.getItem('themeAttrs'); if (a && t !== 'auto') a.split(';').forEach(function (p) { var kv = p.split('='); if (kv[0] && kv[1]) d.setAttribute('data-' + kv[0], kv[1]); });
+    if (localStorage.getItem('bgPhoto')) d.setAttribute('data-bgphoto', '1');
+  } catch (e) {}
+</script>
+<style>
+  /* Страница «Отсутствия»: календарь месяца, карточки «Сейчас и скоро». Цвета — полупрозрачные, одинаково читаются в тёмной и светлой теме. */
+  .abs-layout { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr); gap: 1rem; align-items: start; }
+  .abs-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: .6rem; }
+  .abs-card { border-radius: 14px; border: 1px solid rgba(100,116,139,.4); border-left-width: 5px; padding: .6rem .8rem; cursor: pointer; background: rgba(148,163,184,.10); transition: background .15s; }
+  .abs-card:hover { background: rgba(148,163,184,.22); }
+  .abs-cal { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; }
+  .abs-dow { text-align: center; font-size: 12px; font-weight: 600; opacity: .65; }
+  .abs-day { min-height: 82px; border-radius: 12px; border: 1px solid rgba(100,116,139,.35); padding: 5px 6px; cursor: pointer; overflow: hidden; }
+  .abs-day:hover { border-color: rgba(129,140,248,.9); }
+  .abs-other { opacity: .45; }
+  .abs-today { box-shadow: inset 0 0 0 2px #6366f1; }
+  .abs-sel { outline: 2px solid #f59e0b; outline-offset: -2px; }
+  .abs-num { font-size: 12px; font-weight: 600; }
+  .abs-weekend { color: #fb7185; }
+  .abs-name { font-size: 10px; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-radius: 4px; padding: 0 3px; margin-top: 2px; background: rgba(244,63,94,.24); }
+  .abs-more { font-size: 10px; opacity: .85; margin-top: 2px; }
+  .abs-cnt { display: none; font-size: 11px; font-weight: 700; margin-top: 2px; }
+  .abs-chip { display: inline-block; border-radius: 8px; padding: 1px 7px; font-size: 11px; background: rgba(148,163,184,.18); margin: 2px 4px 0 0; }
+  .abs-seg { border-radius: 999px; padding: 3px 11px; font-size: 12px; border: 1px solid rgba(100,116,139,.45); background: rgba(148,163,184,.10); }
+  .abs-seg.on { background: rgba(99,102,241,.35); border-color: rgba(129,140,248,.8); font-weight: 600; }
+  @media (max-width: 900px) {
+    .abs-layout { grid-template-columns: 1fr; }
+    .abs-day { min-height: 50px; padding: 3px; }
+    .abs-name, .abs-more { display: none; }
+    .abs-cnt { display: block; }
+    .abs-cal { gap: 3px; }
+  }
+</style>
+</head>
+<body class="min-h-screen">
+<div class="max-w-[1400px] mx-auto p-4 md:p-6 space-y-4">
+
+  <header class="relative z-30 glass rounded-3xl px-5 py-4 shadow-xl flex flex-wrap items-center justify-between gap-4">
+    <div class="flex items-center gap-3">
+      <div class="h-10 w-10 rounded-2xl bg-rose-500/15 grid place-items-center shrink-0" style="border:1px solid rgba(251,113,133,.35)">
+        <svg viewBox="0 0 24 24" class="h-5 w-5 text-rose-300" fill="none" stroke="currentColor" stroke-width="1.8">
+          <circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><path d="M17 8l4 4m0-4l-4 4"/>
+        </svg>
+      </div>
+      <div>
+        <h1 class="font-display text-lg font-extrabold text-slate-50 leading-tight">Отсутствия</h1>
+        <p class="text-xs text-slate-400">{{ app_name }}</p>
+      </div>
+    </div>
+
+    <div class="flex flex-wrap items-center gap-2">
+      <a id="assistantPageLink" href="/assistant" class="hidden rounded-xl px-3.5 py-2 text-sm font-medium bg-slate-800/70 hover:bg-slate-700/70 border border-slate-700 transition-all duration-300 hover:scale-[1.02]" title="Вопросы по данным и заполнение шаблонов Excel/Word">🤖 Помощник →</a>
+      <a href="/" id="calendarLink" data-perm-show="calendar.view" class="hidden rounded-xl px-3.5 py-2 text-sm font-medium bg-slate-800/70 hover:bg-slate-700/70 border border-slate-700 transition-all duration-300 hover:scale-[1.02]">← Календарь</a>
+      <a id="warehousePageLink" data-perm-show="warehouse.view" href="/warehouse" class="hidden rounded-xl px-3.5 py-2 text-sm font-medium bg-slate-800/70 hover:bg-slate-700/70 border border-slate-700 transition-all duration-300 hover:scale-[1.02]">Склад →</a>
+      <button id="themeToggle" title="Сменить тему" class="h-9 w-9 rounded-xl bg-slate-800/70 hover:bg-slate-700/70 border border-slate-700 grid place-items-center transition-all duration-300 hover:scale-[1.05]">
+        <svg id="themeIconMoon" viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+        <svg id="themeIconSun" viewBox="0 0 24 24" class="h-4 w-4 hidden" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+      </button>
+      <div class="relative">
+        <button id="userMenuBtn" class="rounded-xl pl-3 pr-2.5 py-2 text-sm font-medium bg-indigo-500/15 hover:bg-indigo-500/25 border border-indigo-400/30 transition-all duration-300 hover:scale-[1.02] flex items-center gap-2">
+          <span id="userLabel">…</span>
+          <svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+        </button>
+        <div id="userMenu" class="hidden absolute right-0 mt-2 w-56 glass rounded-2xl shadow-xl p-2 z-20 space-y-1">
+          <button id="changePwBtn" class="w-full text-left px-3 py-2 rounded-xl text-sm hover:bg-slate-700/50 transition-colors">Сменить пароль</button>
+          <div class="my-1 border-t border-slate-700/60"></div>
+          <button id="logoutBtn" class="w-full text-left px-3 py-2 rounded-xl text-sm text-rose-300 hover:bg-rose-500/10 transition-colors">Выйти</button>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <section class="glass rounded-3xl px-5 py-4 shadow-xl flex flex-wrap items-center gap-3">
+    <input id="absSearch" type="search" autocomplete="off" placeholder="Поиск по фамилии…" class="rounded-xl px-3 py-2 text-sm accent-ring" style="flex:1 1 260px; min-width:200px">
+    <select id="absRole" class="rounded-xl px-3 py-2 text-sm">
+      <option value="all">Все должности</option>
+      <option value="fitter">Монтёры</option>
+      <option value="driver">Водители</option>
+      <option value="operator">Операторы</option>
+      <option value="warehouse">Склад</option>
+    </select>
+    <label class="flex items-center gap-1.5 text-xs text-slate-300"><input type="checkbox" id="absInactive" class="rounded accent-indigo-500"> И неактивные</label>
+    <button id="absAddBtn" class="hidden rounded-xl px-4 py-2 text-sm font-semibold bg-indigo-500 hover:bg-indigo-400 text-white shadow-lg shadow-indigo-500/25 transition-all duration-300">＋ Отметить отсутствие</button>
+  </section>
+
+  <section id="soonBlock" class="glass rounded-3xl p-6 md:p-8 shadow-xl space-y-3"></section>
+
+  <div class="abs-layout">
+    <section class="glass rounded-3xl p-6 md:p-8 shadow-xl space-y-3">
+      <div class="flex items-center justify-between gap-2">
+        <button id="calPrev" class="h-9 w-9 rounded-xl bg-slate-800/70 hover:bg-slate-700/70 border border-slate-700 grid place-items-center">‹</button>
+        <h2 id="calTitle" class="font-display text-lg font-bold"></h2>
+        <span class="flex items-center gap-2">
+          <button id="calToday" class="rounded-xl px-3 py-1.5 text-xs font-medium bg-slate-800/70 hover:bg-slate-700/70 border border-slate-700">Сегодня</button>
+          <button id="calNext" class="h-9 w-9 rounded-xl bg-slate-800/70 hover:bg-slate-700/70 border border-slate-700 grid place-items-center">›</button>
+        </span>
+      </div>
+      <div class="abs-cal"><div class="abs-dow">Пн</div><div class="abs-dow">Вт</div><div class="abs-dow">Ср</div><div class="abs-dow">Чт</div><div class="abs-dow">Пт</div><div class="abs-dow">Сб</div><div class="abs-dow">Вс</div></div>
+      <div id="absCal" class="abs-cal"></div>
+      <p class="text-xs text-slate-500">Чем темнее клетка, тем больше людей отсутствует в этот день. Нажмите на день — справа список, кто отсутствует.</p>
+    </section>
+    <section id="dayBlock" class="glass rounded-3xl p-6 md:p-8 shadow-xl space-y-3"></section>
+  </div>
+
+  <section id="peopleBlock" class="glass rounded-3xl p-6 md:p-8 shadow-xl space-y-3"></section>
+</div>
+
+<div id="modal"></div>
+
+<script src="{{ asset_url('static/js/theme.js') }}"></script>
+<script src="{{ asset_url('static/js/bgphoto.js') }}"></script>
+<script src="{{ asset_url('static/js/fx.js') }}"></script>
+<script src="{{ asset_url('static/js/seasons.js') }}"></script>
+<script src="{{ asset_url('static/js/sounds.js') }}"></script>
+<script src="{{ asset_url('static/js/api.js') }}"></script>
+<script src="{{ asset_url('static/js/ui.js') }}"></script>
+<script src="{{ asset_url('static/js/absences.js') }}"></script>
+</body>
+</html>
