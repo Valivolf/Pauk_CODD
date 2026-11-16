@@ -68,12 +68,10 @@ function isMainModule(): boolean {
 
 if (isMainModule()) {
   const cfg = loadBotConfig();
-  if (!cfg.vkToken) {
-    console.error('[bot] Не задан VK_TOKEN. Укажите VK_TOKEN в .env или переменных окружения.');
-    process.exit(1);
-  }
   const handle = startBot(cfg);
+  const idleTimer = !handle ? setInterval(() => {}, 60_000) : null;
   const shutdown = () => {
+    if (idleTimer) clearInterval(idleTimer);
     handle?.stop();
     process.exit(0);
   };

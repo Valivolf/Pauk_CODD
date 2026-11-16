@@ -10,7 +10,7 @@ import multer from 'multer';
 
 const require = createRequire(import.meta.url);
 const archiver = require('archiver') as (format: 'zip' | 'tar' | 'json', options?: ArchiverOptions) => Archiver;
-import { requirePasswordOk, type AuthedRequest } from '../auth.ts';
+import { requirePasswordOk, requirePerm, type AuthedRequest } from '../auth.ts';
 import {
   ACCOUNT_CHAT_FILES_DIR,
   CHAT_FILES_DIR,
@@ -312,26 +312,93 @@ function getPhotoStorageConfig(): {
   };
 }
 
+const PHOTO_SPOOL_DIR = path.join(DATA_DIR, 'photo_spool');
+const PHOTO_MARKER_FILE = '.lan_calendar_photo_store';
+
+function getDiskStatsFor(targetDir: string): { free: number; total: number } | null {
+  try {
+    if (!fs.existsSync(targetDir)) return null;
+    const st = fs.statfsSync(targetDir);
+    const total = Number(st.blocks) * Number(st.bsize);
+    const free = Number(st.bavail) * Number(st.bsize);
+    return { free, total };
+  } catch {
+    return null;
+  }
+}
+
+function effectiveExternalPhotoDir(cfg: ReturnType<typeof getPhotoStorageConfig>): string {
+  if (cfg.mode === 'smb' && cfg.path && !cfg.path.startsWith('\\\\') && !cfg.path.startsWith('//')) {
+    return cfg.path;
+  }
+  const envDir = (process.env.PHOTOS_MOUNT_DIR || '').trim();
+  if (envDir && fs.existsSync(envDir)) return envDir;
+  if (PHOTOS_DIR !== path.join(DATA_DIR, 'visit_photos') && fs.existsSync(PHOTOS_DIR)) {
+    return PHOTOS_DIR;
+  }
+  return '';
+}
+
+const photoStorageRuntime = {
+  scan: null as null | { share?: { files: number; bytes: number }; spool?: { files: number; bytes: number }; local?: { files: number; bytes: number } },
+  migration: { state: 'idle', done: 0, total: 0, failed: 0, bytes: 0, message: '' },
+  index: {
+    state: 'idle',
+    done: 0,
+    matched: 0,
+    folders: 0,
+    found: 0,
+    added: 0,
+    renamed: 0,
+    moved: 0,
+    removed: 0,
+    unmatched_count: 0,
+    unmatched: [] as string[],
+    errors: 0,
+    message: '',
+    finished_at: '',
+  },
+};
+
 function getPhotoStorageStatus(includeConfig: boolean) {
   const cfg = getPhotoStorageConfig();
   const localStats = dirStats(PHOTOS_DIR);
+  const spoolStats = dirStats(PHOTO_SPOOL_DIR);
   const localDisk = getLocalDiskStats();
+  const extDir = effectiveExternalPhotoDir(cfg);
+  const configured = (cfg.mode === 'smb' && Boolean(cfg.path)) || Boolean(extDir);
+  const extExists = Boolean(extDir && fs.existsSync(extDir));
+  const hasMarker = extExists && fs.existsSync(path.join(extDir, PHOTO_MARKER_FILE));
+  const needsMarker = Boolean(extExists && !hasMarker);
+  const available = Boolean(extExists && hasMarker);
+
+  let reason = '';
+  if (configured && !available) {
+    if (cfg.mode === 'smb' && (cfg.path.startsWith('\\\\') || cfg.path.startsWith('//'))) {
+      reason = 'Смонтируйте сетевую папку Windows/NAS на хосте в /mnt/lan-calendar-photos и задайте путь /app/photos (или PHOTOS_DIR=/app/photos)';
+    } else if (!extExists) {
+      reason = 'Указанная папка недоступна на сервере';
+    } else if (needsMarker) {
+      reason = 'В папке нет метки хранилища — нажмите «Подготовить диск»';
+    }
+  }
+
   const out: Record<string, unknown> = {
     mode: cfg.mode,
-    configured: cfg.mode === 'smb' && Boolean(cfg.path),
-    available: false,
-    reason: cfg.mode === 'smb' ? 'Сетевой диск SMB недоступен в облачном контейнере Node.js (фото сохраняются локально)' : '',
-    path: cfg.mode === 'smb' ? cfg.path : PHOTOS_DIR,
-    needs_marker: false,
+    configured,
+    available,
+    reason,
+    path: cfg.mode === 'smb' && cfg.path ? cfg.path : extDir || PHOTOS_DIR,
+    needs_marker: needsMarker,
     local_disk: localDisk,
-    share_disk: null,
+    share_disk: available ? getDiskStatsFor(extDir) : null,
     server_files: {
       server: localStats,
-      buffer: { files: 0, bytes: 0 },
+      buffer: spoolStats,
     },
-    scan: null,
-    migration: { state: 'idle', done: 0, total: 0, failed: 0, bytes: 0 },
-    index: { state: 'idle', done: 0, matched: 0, folders: 0, found: 0, added: 0 },
+    scan: photoStorageRuntime.scan,
+    migration: { ...photoStorageRuntime.migration },
+    index: { ...photoStorageRuntime.index },
   };
   if (includeConfig) out.config = cfg;
   return out;
@@ -1216,7 +1283,7 @@ export function createMonitoringAndChatRouter(): Router {
     res.json(getPhotoStorageStatus(admin));
   });
 
-  router.put('/api/photo-storage/config', requirePasswordOk, (req, res) => {
+  router.put('/api/photo-storage/config', requirePerm('admin.settings'), (req, res) => {
     const b = req.body || {};
     const port = Number(b.port || 445);
     if (!Number.isFinite(port) || port < 1 || port > 65535) {
@@ -1241,28 +1308,218 @@ export function createMonitoringAndChatRouter(): Router {
     res.json(getPhotoStorageStatus(true));
   });
 
-  router.post('/api/photo-storage/test', requirePasswordOk, (req, res) => {
+  router.post('/api/photo-storage/test', requirePerm('admin.settings'), (req, res) => {
     const b = req.body || {};
-    res.json({
-      ok: false,
-      target: String(b.path || ''),
-      message: 'Прямое подключение SMB в облачной Node.js-среде недоступно; все фото сохраняются в локальном хранилище.',
-    });
+    const target = String(b.path || '').trim();
+    if (!target) {
+      res.json({ ok: false, target: '', message: 'Укажите путь к папке' });
+      return;
+    }
+    if (target.startsWith('\\\\') || target.startsWith('//')) {
+      res.json({
+        ok: false,
+        target,
+        message: 'В Linux/Docker смонтируйте сетевую папку на сервере в /mnt/lan-calendar-photos и укажите путь /app/photos.',
+      });
+      return;
+    }
+    try {
+      if (!fs.existsSync(target) || !fs.statSync(target).isDirectory()) {
+        res.json({ ok: false, target, message: 'Папка не найдена на сервере' });
+        return;
+      }
+      fs.accessSync(target, fs.constants.R_OK | fs.constants.W_OK);
+      const entries = fs.readdirSync(target, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name);
+      res.json({
+        ok: true,
+        target,
+        folders: entries.length,
+        names: entries.slice(0, 8),
+        disk: getDiskStatsFor(target),
+      });
+    } catch (err) {
+      res.json({ ok: false, target, message: (err as Error).message });
+    }
   });
 
-  router.post('/api/photo-storage/scan', requirePasswordOk, (_req, res) => {
+  router.post('/api/photo-storage/scan', requirePerm('admin.settings'), (_req, res) => {
+    const cfg = getPhotoStorageConfig();
+    const extDir = effectiveExternalPhotoDir(cfg);
+    photoStorageRuntime.scan = {
+      share: extDir && fs.existsSync(extDir) ? dirStats(extDir) : undefined,
+      spool: dirStats(PHOTO_SPOOL_DIR),
+      local: dirStats(PHOTOS_DIR),
+    };
     res.json(getPhotoStorageStatus(true));
   });
-  router.post('/api/photo-storage/marker', requirePasswordOk, (_req, res) => {
-    res.status(409).json({ detail: 'Подготовка сетевого диска доступна только при смонтированной папке на сервере' });
+
+  router.post('/api/photo-storage/marker', requirePerm('admin.settings'), (_req, res) => {
+    const cfg = getPhotoStorageConfig();
+    const extDir = effectiveExternalPhotoDir(cfg);
+    if (!extDir || !fs.existsSync(extDir)) {
+      res.status(409).json({ detail: 'Подготовка диска доступна только когда папка хранилища смонтирована на сервере' });
+      return;
+    }
+    try {
+      fs.writeFileSync(path.join(extDir, PHOTO_MARKER_FILE), `lan-calendar ${nowIso()}\n`, 'utf-8');
+      res.json(getPhotoStorageStatus(true));
+    } catch (err) {
+      res.status(409).json({ detail: `Не удалось записать метку: ${(err as Error).message}` });
+    }
   });
-  router.post('/api/photo-storage/flush', requirePasswordOk, (_req, res) => {
-    res.json({ moved: 0, status: getPhotoStorageStatus(true) });
+
+  router.post('/api/photo-storage/flush', requirePerm('admin.settings'), (_req, res) => {
+    const cfg = getPhotoStorageConfig();
+    const extDir = effectiveExternalPhotoDir(cfg);
+    const targetRoot = extDir && fs.existsSync(path.join(extDir, PHOTO_MARKER_FILE)) ? extDir : PHOTOS_DIR;
+    let moved = 0;
+    if (fs.existsSync(PHOTO_SPOOL_DIR)) {
+      const db = getDb();
+      const walkFlush = (dir: string, relBase: string) => {
+        for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+          const src = path.join(dir, ent.name);
+          const rel = path.join(relBase, ent.name);
+          if (ent.isDirectory()) {
+            walkFlush(src, rel);
+          } else if (ent.isFile()) {
+            const dst = path.join(targetRoot, rel);
+            fs.mkdirSync(path.dirname(dst), { recursive: true });
+            fs.copyFileSync(src, dst);
+            fs.unlinkSync(src);
+            db.prepare('UPDATE visit_photos SET storage_path = ?, rel_path = ? WHERE storage_path = ?').run(dst, rel, src);
+            moved += 1;
+          }
+        }
+      };
+      walkFlush(PHOTO_SPOOL_DIR, '');
+    }
+    res.json({ moved, status: getPhotoStorageStatus(true) });
   });
-  router.post('/api/photo-storage/migrate', requirePasswordOk, (_req, res) => {
+
+  router.post('/api/photo-storage/migrate', requirePerm('admin.settings'), (_req, res) => {
+    const cfg = getPhotoStorageConfig();
+    const extDir = effectiveExternalPhotoDir(cfg);
+    if (!extDir || !fs.existsSync(path.join(extDir, PHOTO_MARKER_FILE))) {
+      res.status(409).json({ detail: 'Внешнее хранилище не подготовлено или недоступно' });
+      return;
+    }
+    if (extDir === PHOTOS_DIR) {
+      res.status(409).json({ detail: 'Текущая локальная папка уже совпадает с целевой' });
+      return;
+    }
+    const db = getDb();
+    const rows = db.prepare("SELECT id, point_id, taken_date, file_ext, storage_path, rel_path FROM visit_photos WHERE storage = 'local'").all() as Array<{
+      id: number;
+      point_id: string;
+      taken_date: string;
+      file_ext: string;
+      storage_path: string;
+      rel_path: string | null;
+    }>;
+    photoStorageRuntime.migration = { state: 'running', done: 0, total: rows.length, failed: 0, bytes: 0, message: '' };
+    setImmediate(() => {
+      for (const ph of rows) {
+        try {
+          const src = photoStoragePath(ph);
+          if (!fs.existsSync(src)) {
+            photoStorageRuntime.migration.failed += 1;
+            continue;
+          }
+          const rel = path.join(safeFolderSegment(ph.point_id), ph.taken_date, `${ph.id}.${ph.file_ext}`);
+          const dst = path.join(extDir, rel);
+          fs.mkdirSync(path.dirname(dst), { recursive: true });
+          const sz = fs.statSync(src).size;
+          fs.copyFileSync(src, dst);
+          fs.unlinkSync(src);
+          db.prepare("UPDATE visit_photos SET storage = 'share', storage_path = ?, rel_path = ? WHERE id = ?").run(dst, rel, ph.id);
+          photoStorageRuntime.migration.done += 1;
+          photoStorageRuntime.migration.bytes += sz;
+        } catch (err) {
+          photoStorageRuntime.migration.failed += 1;
+          photoStorageRuntime.migration.message = (err as Error).message;
+        }
+      }
+      photoStorageRuntime.migration.state = photoStorageRuntime.migration.failed > 0 ? 'finished_with_errors' : 'done';
+    });
     res.json(getPhotoStorageStatus(true));
   });
-  router.post('/api/photo-storage/index', requirePasswordOk, (_req, res) => {
+
+  router.post('/api/photo-storage/index', requirePerm('admin.settings'), (_req, res) => {
+    const cfg = getPhotoStorageConfig();
+    const extDir = effectiveExternalPhotoDir(cfg);
+    const rootDir = extDir && fs.existsSync(extDir) ? extDir : PHOTOS_DIR;
+    const db = getDb();
+    const allPts = db.prepare('SELECT id FROM points').all() as Array<{ id: string }>;
+    const byLow = new Map(allPts.map((p) => [p.id.toLowerCase(), p.id]));
+    const existingPaths = new Set(
+      (db.prepare('SELECT storage_path, rel_path FROM visit_photos').all() as Array<{ storage_path: string; rel_path: string | null }>).flatMap((r) =>
+        [r.storage_path, r.rel_path ? path.join(rootDir, r.rel_path) : ''].filter(Boolean),
+      ),
+    );
+    const ix = photoStorageRuntime.index;
+    ix.state = 'running';
+    ix.done = 0;
+    ix.matched = 0;
+    ix.folders = 0;
+    ix.found = 0;
+    ix.added = 0;
+    ix.renamed = 0;
+    ix.moved = 0;
+    ix.removed = 0;
+    ix.errors = 0;
+    ix.unmatched = [];
+    ix.unmatched_count = 0;
+    ix.message = '';
+
+    setImmediate(() => {
+      try {
+        if (fs.existsSync(rootDir)) {
+          const topDirs = fs.readdirSync(rootDir, { withFileTypes: true }).filter((d) => d.isDirectory());
+          ix.folders = topDirs.length;
+          for (const td of topDirs) {
+            const pointId = byLow.get(td.name.toLowerCase());
+            if (!pointId) {
+              ix.unmatched_count += 1;
+              if (ix.unmatched.length < 20) ix.unmatched.push(td.name);
+              continue;
+            }
+            ix.matched += 1;
+            const pointPath = path.join(rootDir, td.name);
+            const scanPoint = (curDir: string, dateHint: string) => {
+              for (const ent of fs.readdirSync(curDir, { withFileTypes: true })) {
+                const full = path.join(curDir, ent.name);
+                if (ent.isDirectory()) {
+                  const m = /^(\d{4}-\d{2}-\d{2})$/.exec(ent.name) || /^(\d{2})-(\d{2})-(\d{4})$/.exec(ent.name);
+                  const dStr = m ? (m.length === 2 ? m[1] : `${m[3]}-${m[2]}-${m[1]}`) : dateHint;
+                  scanPoint(full, dStr);
+                } else if (ent.isFile()) {
+                  const ext = path.extname(ent.name).replace('.', '').toLowerCase();
+                  if (!IMAGE_MIME[ext]) continue;
+                  ix.found += 1;
+                  if (!existingPaths.has(full)) {
+                    const st = fs.statSync(full);
+                    const taken = dateHint || st.mtime.toISOString().slice(0, 10);
+                    const rel = path.relative(rootDir, full);
+                    db.prepare(
+                      `INSERT INTO visit_photos (task_id, point_id, taken_date, file_ext, uploaded_at, uploaded_by, storage, storage_path, rel_path, source, file_name, file_size)
+                       VALUES (?, ?, ?, ?, ?, 'Диск', ?, ?, ?, 'import', ?, ?)`,
+                    ).run(`idx_${pointId}_${taken}`, pointId, taken, ext, nowIso(), extDir ? 'share' : 'local', full, rel, ent.name, st.size);
+                    ix.added += 1;
+                  }
+                }
+              }
+            };
+            scanPoint(pointPath, '');
+            ix.done += 1;
+          }
+        }
+        ix.state = ix.errors > 0 ? 'finished_with_errors' : 'done';
+        ix.finished_at = nowIso();
+      } catch (err) {
+        ix.state = 'error';
+        ix.message = (err as Error).message;
+      }
+    });
     res.json(getPhotoStorageStatus(true));
   });
 

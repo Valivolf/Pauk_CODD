@@ -48,10 +48,6 @@ function pageGuard(req: Request, res: Response, ...needPerms: string[]): ReturnT
     res.redirect('/login');
     return null;
   }
-  if (user.must_change_password) {
-    res.redirect('/login');
-    return null;
-  }
   if (needPerms.length > 0 && !hasAnyPerm(user.permissions, needPerms)) {
     const dest = landingPage(user.permissions);
     if (dest !== req.path) {
@@ -89,9 +85,31 @@ export function registerViewRoutes(app: Express): void {
     res.sendFile(path.join(STATIC_DIR, 'favicon.ico'));
   });
 
+  app.get('/ca.crt', (_req, res) => {
+    const candidates = [
+      process.env.CADDY_CA_CERT || '',
+      '/data/caddy/pki/authorities/local/root.crt',
+      path.join(ROOT_DIR, 'data', 'caddy-root.crt'),
+    ].filter(Boolean);
+    const hit = candidates.find((p) => {
+      try {
+        return fs.existsSync(p) && fs.statSync(p).isFile();
+      } catch {
+        return false;
+      }
+    });
+    if (!hit) {
+      res.status(404).type('text/plain; charset=utf-8').send('Корневой сертификат Caddy недоступен в этом режиме запуска.');
+      return;
+    }
+    res.setHeader('Content-Type', 'application/x-x509-ca-cert');
+    res.setHeader('Content-Disposition', 'attachment; filename="caddy-root.crt"');
+    res.sendFile(path.resolve(hit));
+  });
+
   app.get('/login', (req, res) => {
     const user = getSessionUser(req);
-    if (user && !user.must_change_password) {
+    if (user) {
       res.redirect(landingPage(user.permissions));
       return;
     }
@@ -169,6 +187,10 @@ export function registerViewRoutes(app: Express): void {
   app.get('/plan-print/:day', (req, res) => {
     const user = pageGuard(req, res, 'calendar.print');
     if (!user) return;
+    if (user.must_change_password) {
+      res.redirect(landingPage(user.permissions));
+      return;
+    }
     const day = req.params.day;
     if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) {
       res.status(400).send('Неверная дата');

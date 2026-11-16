@@ -1,0 +1,15 @@
+# Локальный запуск на ноутбуке (Windows / macOS / Linux) без Caddy и host-сети:
+#   docker compose -f docker/docker-compose.yml -f docker/docker-compose.local.yml up -d --build lan-calendar codd-bot
+# Открывать в браузере: http://localhost:3000
+
+services:
+  lan-calendar:
+    environment:
+      COOKIE_SECURE: "false"
+    volumes:
+      - ../data:/app/data
+      - ../backups:/app/backups
+      - ../photos:/app/photos
+
+  caddy:
+    profiles: ["prod-caddy"]

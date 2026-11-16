@@ -15,9 +15,10 @@ import {
   requirePerm,
   type AuthedRequest,
 } from '../auth.ts';
-import { AI_FILES_DIR, settings } from '../config.ts';
+import { AI_FILES_DIR, DATA_DIR, settings } from '../config.ts';
 import { getDb, nowIso } from '../db.ts';
 import { hasAnyPerm, hasPerm, networkOk, secretsOk } from '../permissions.ts';
+import { callRobot, RobotRejectedError, RobotUnavailableError } from '../services/yandexRobotClient.ts';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
@@ -2609,7 +2610,7 @@ export function createStatsAndExtrasRouter(): Router {
     res.json(publicLiveMap(updated));
   });
 
-  router.post('/api/live-maps/:mapId/sync', requirePasswordOk, (req, res) => {
+  router.post('/api/live-maps/:mapId/sync', requirePasswordOk, async (req, res) => {
     const id = Number(req.params.mapId);
     const db = getDb();
     const row = db.prepare('SELECT * FROM live_maps WHERE id = ?').get(id) as Record<string, unknown> | undefined;
@@ -2619,16 +2620,58 @@ export function createStatsAndExtrasRouter(): Router {
     }
     const { points } = selectLiveMapPoints(String(row.kind), parseJsonSafe(String(row.params_json || '{}'), {}));
     const withCoords = points.filter(hasValidCoords).length;
-    db.prepare('UPDATE live_maps SET points_count = ?, skipped = ?, updated_at = ? WHERE id = ?').run(
-      withCoords,
-      points.length - withCoords,
-      nowIso(),
-      id,
-    );
-    res.json({ job_id: null, uptodate: true, points: withCoords, kind: 'none', summary: 'Робот карт не подключён' });
+    const robotRows = points
+      .filter(hasValidCoords)
+      .map((p) => ({
+        id: p.id,
+        lat: Number(p.lat),
+        lon: Number(p.lon),
+        address: p.address || '',
+        status: p.status || '',
+      }));
+    try {
+      const r = await callRobot('POST', '/maps/sync', {
+        json: {
+          name: String(row.name),
+          map_id: String(row.map_id || ''),
+          points: robotRows,
+        },
+        timeoutMs: 30000,
+      });
+      const rData = (r.jsonData || {}) as Record<string, unknown>;
+      db.prepare('UPDATE live_maps SET points_count = ?, skipped = ?, map_id = COALESCE(NULLIF(?, \'\'), map_id), url = COALESCE(NULLIF(?, \'\'), url), last_sync = ?, last_error = \'\', updated_at = ? WHERE id = ?').run(
+        withCoords,
+        points.length - withCoords,
+        String(rData.map_id || ''),
+        String(rData.url || ''),
+        nowIso(),
+        nowIso(),
+        id,
+      );
+      res.json({
+        job_id: rData.job_id || null,
+        uptodate: Boolean(rData.uptodate),
+        points: withCoords,
+        kind: String(rData.kind || 'sync'),
+        summary: String(rData.summary || 'Обновление запущено'),
+      });
+    } catch (err) {
+      db.prepare('UPDATE live_maps SET points_count = ?, skipped = ?, last_error = ?, updated_at = ? WHERE id = ?').run(
+        withCoords,
+        points.length - withCoords,
+        (err as Error).message,
+        nowIso(),
+        id,
+      );
+      if (err instanceof RobotUnavailableError) {
+        res.json({ job_id: null, uptodate: true, points: withCoords, kind: 'none', summary: err.message });
+      } else {
+        res.status(502).json({ detail: (err as Error).message });
+      }
+    }
   });
 
-  router.post('/api/live-maps/:mapId/rebuild', requirePasswordOk, (req, res) => {
+  router.post('/api/live-maps/:mapId/rebuild', requirePasswordOk, async (req, res) => {
     const id = Number(req.params.mapId);
     const db = getDb();
     const row = db.prepare('SELECT * FROM live_maps WHERE id = ?').get(id) as Record<string, unknown> | undefined;
@@ -2645,7 +2688,31 @@ export function createStatsAndExtrasRouter(): Router {
       nowIso(),
       id,
     );
-    res.json({ members: points.length, job_id: null, uptodate: true, points: withCoords });
+    try {
+      const r = await callRobot('POST', '/maps/sync', {
+        json: {
+          name: String(row.name),
+          map_id: String(row.map_id || ''),
+          points: points.filter(hasValidCoords).map((p) => ({
+            id: p.id,
+            lat: Number(p.lat),
+            lon: Number(p.lon),
+            address: p.address || '',
+            status: p.status || '',
+          })),
+        },
+        timeoutMs: 30000,
+      });
+      const rData = (r.jsonData || {}) as Record<string, unknown>;
+      res.json({
+        members: points.length,
+        job_id: rData.job_id || null,
+        uptodate: Boolean(rData.uptodate),
+        points: withCoords,
+      });
+    } catch {
+      res.json({ members: points.length, job_id: null, uptodate: true, points: withCoords });
+    }
   });
 
   router.delete('/api/live-maps/:mapId', requirePasswordOk, (req, res) => {
@@ -2659,17 +2726,141 @@ export function createStatsAndExtrasRouter(): Router {
     res.json({ ok: true });
   });
 
-  // Yandex Robot fallback endpoints
-  router.get('/api/yandex-robot/status', requirePasswordOk, (_req, res) => {
-    res.json({
-      available: false,
-      logged_in: false,
-      login: '',
-      busy: false,
-      message: 'В веб-среде контейнер браузерного робота Яндекса не запущен — используйте экспорт Excel/KML.',
-      viewport: null,
-    });
+  // Yandex Robot proxy + fallback endpoints
+  function robotProfileParam(req: Request): Record<string, string> {
+    const profile = String(req.query.profile || 'maps') === 'forms' ? 'forms' : 'maps';
+    return profile === 'maps' ? {} : { profile };
+  }
+
+  async function proxyRobotJson(
+    req: Request,
+    res: Response,
+    method: string,
+    robotPath: string,
+    opts: { params?: Record<string, string | number | boolean | undefined>; json?: unknown; timeoutMs?: number } = {},
+  ) {
+    try {
+      const resp = await callRobot(method, robotPath, opts);
+      res.json(resp.jsonData ?? { ok: true });
+    } catch (err) {
+      if (err instanceof RobotUnavailableError) {
+        res.status(503).json({ detail: err.message });
+      } else if (err instanceof RobotRejectedError) {
+        res.status(err.statusCode).json({ detail: err.message });
+      } else {
+        res.status(502).json({ detail: (err as Error).message });
+      }
+    }
+  }
+
+  router.get('/api/yandex-robot/status', requirePasswordOk, async (req, res) => {
+    const verify = req.query.verify === '1' || req.query.verify === 'true' ? '1' : undefined;
+    const check = typeof req.query.check === 'string' ? req.query.check : undefined;
+    try {
+      const resp = await callRobot('GET', '/status', {
+        params: { verify, check, ...robotProfileParam(req) },
+        timeoutMs: verify ? 220000 : 10000,
+      });
+      res.json(resp.jsonData);
+    } catch (err) {
+      if (err instanceof RobotUnavailableError) {
+        res.json({
+          available: false,
+          logged_in: false,
+          login: '',
+          busy: false,
+          message: err.message,
+          viewport: null,
+        });
+      } else if (err instanceof RobotRejectedError) {
+        res.status(err.statusCode).json({ detail: err.message });
+      } else {
+        res.status(502).json({ detail: (err as Error).message });
+      }
+    }
   });
+
+  router.get('/api/yandex-robot/view', requirePerm('admin.settings'), async (req, res) => {
+    const after = req.query.after !== undefined ? String(req.query.after) : '-1';
+    const wait = Math.min(5, Math.max(0, Number(req.query.wait || 0)));
+    try {
+      const resp = await callRobot('GET', '/view', {
+        params: { after, wait, ...robotProfileParam(req) },
+        timeoutMs: wait * 1000 + 20000,
+        raw: true,
+      });
+      for (const h of ['x-frame-seq', 'x-view-width', 'x-view-height']) {
+        const val = resp.headers.get(h);
+        if (val) res.setHeader(h, val);
+      }
+      res.setHeader('Cache-Control', 'no-store');
+      if (resp.status === 204) {
+        res.status(204).end();
+        return;
+      }
+      if (resp.status >= 400) {
+        res.status(resp.status).json({ detail: 'Кадр недоступен' });
+        return;
+      }
+      res.setHeader('Content-Type', 'image/jpeg');
+      res.send(resp.body);
+    } catch (err) {
+      res.status(err instanceof RobotUnavailableError ? 503 : 502).json({ detail: (err as Error).message });
+    }
+  });
+
+  router.post('/api/yandex-robot/view/open', requirePerm('admin.settings'), (req, res) =>
+    proxyRobotJson(req, res, 'POST', '/view/open', { params: robotProfileParam(req), json: req.body || {}, timeoutMs: 60000 }),
+  );
+  router.post('/api/yandex-robot/view/click', requirePerm('admin.settings'), (req, res) =>
+    proxyRobotJson(req, res, 'POST', '/view/click', { params: robotProfileParam(req), json: req.body || {} }),
+  );
+  router.post('/api/yandex-robot/view/type', requirePerm('admin.settings'), (req, res) =>
+    proxyRobotJson(req, res, 'POST', '/view/type', { params: robotProfileParam(req), json: req.body || {} }),
+  );
+  router.post('/api/yandex-robot/view/key', requirePerm('admin.settings'), (req, res) =>
+    proxyRobotJson(req, res, 'POST', '/view/key', { params: robotProfileParam(req), json: req.body || {} }),
+  );
+  router.post('/api/yandex-robot/view/scroll', requirePerm('admin.settings'), (req, res) =>
+    proxyRobotJson(req, res, 'POST', '/view/scroll', { params: robotProfileParam(req), json: req.body || {} }),
+  );
+  router.post('/api/yandex-robot/view/resize', requirePerm('admin.settings'), (req, res) =>
+    proxyRobotJson(req, res, 'POST', '/view/resize', { params: robotProfileParam(req), json: req.body || {} }),
+  );
+  router.post('/api/yandex-robot/audio/start', requirePerm('admin.settings'), (req, res) =>
+    proxyRobotJson(req, res, 'POST', '/audio/start', { params: robotProfileParam(req) }),
+  );
+  router.get('/api/yandex-robot/audio', requirePerm('admin.settings'), async (req, res) => {
+    const after = req.query.after !== undefined ? String(req.query.after) : '-1';
+    const wait = Math.min(5, Math.max(0, Number(req.query.wait || 0)));
+    try {
+      const resp = await callRobot('GET', '/audio', {
+        params: { after, wait, ...robotProfileParam(req) },
+        timeoutMs: wait * 1000 + 20000,
+        raw: true,
+      });
+      for (const h of ['x-audio-seq', 'x-audio-stream']) {
+        const val = resp.headers.get(h);
+        if (val) res.setHeader(h, val);
+      }
+      res.setHeader('Cache-Control', 'no-store');
+      if (resp.status === 204) {
+        res.status(204).end();
+        return;
+      }
+      if (resp.status >= 400) {
+        res.status(resp.status).json({ detail: 'Звук недоступен' });
+        return;
+      }
+      res.setHeader('Content-Type', 'audio/webm');
+      res.send(resp.body);
+    } catch (err) {
+      res.status(err instanceof RobotUnavailableError ? 503 : 502).json({ detail: (err as Error).message });
+    }
+  });
+  router.post('/api/yandex-robot/logout', requirePerm('admin.settings'), (req, res) =>
+    proxyRobotJson(req, res, 'POST', '/account/logout', { params: robotProfileParam(req) }),
+  );
 
   const getRobotSettings = () => {
     const db = getDb();
@@ -2708,6 +2899,13 @@ export function createStatsAndExtrasRouter(): Router {
   });
 
   router.get('/api/yandex-robot/netcheck', requirePerm('admin.settings'), async (_req, res) => {
+    try {
+      const resp = await callRobot('GET', '/netcheck', { timeoutMs: 40000 });
+      res.json(resp.jsonData);
+      return;
+    } catch {
+      // Fallback to direct check from server container
+    }
     const hosts = [
       { host: 'yandex.ru', purpose: 'Основной домен Яндекса', required: true },
       { host: 'yandex.ru/map-constructor/', purpose: 'Конструктор карт', required: true },
@@ -2717,8 +2915,8 @@ export function createStatsAndExtrasRouter(): Router {
       hosts.map(async (h) => {
         const t0 = Date.now();
         try {
-          await fetchJsonTimeout(`https://${h.host}`, { method: 'HEAD' }, 4000).catch(() => null);
-          return { ...h, ok: true, ms: Date.now() - t0, error: '' };
+          const r = await fetchJsonTimeout(`https://${h.host}`, { method: 'HEAD' }, 4000);
+          return { ...h, ok: r !== undefined, ms: Date.now() - t0, error: '' };
         } catch (err) {
           return { ...h, ok: false, ms: Date.now() - t0, error: (err as Error).message };
         }
@@ -2727,12 +2925,94 @@ export function createStatsAndExtrasRouter(): Router {
     res.json({ required_ok: items.filter((i) => i.required).every((i) => i.ok), items });
   });
 
-  router.post('/api/yandex-robot/crews/:crewId/map', requirePasswordOk, (_req, res) => {
-    res.status(503).json({ detail: 'Робот Яндекс.Конструктора карт не подключён в этой среде — выгрузите план в Excel или KML.' });
+  router.post('/api/yandex-robot/crews/:crewId/map', requirePasswordOk, async (req, res) => {
+    const crewId = Number(req.params.crewId);
+    const db = getDb();
+    const crew = db.prepare('SELECT id, name, map_link FROM crews WHERE id = ?').get(crewId) as
+      | { id: number; name: string; map_link: string | null }
+      | undefined;
+    if (!crew) {
+      res.status(404).json({ detail: 'Бригада не найдена' });
+      return;
+    }
+    const today = todayIso();
+    const tasks = db
+      .prepare(
+        `SELECT t.id, t.point, t.address, t.work, p.lat, p.lon, p.status
+         FROM tasks t
+         LEFT JOIN points p ON p.id = t.point
+         WHERE t.team = ? AND t.date = ?`,
+      )
+      .all(crewId, today) as Array<{
+      id: string;
+      point: string;
+      address: string | null;
+      work: string | null;
+      lat: string | null;
+      lon: string | null;
+      status: string | null;
+    }>;
+    const withCoords = tasks.filter((t) => {
+      const la = Number(t.lat);
+      const lo = Number(t.lon);
+      return Number.isFinite(la) && Number.isFinite(lo) && la !== 0 && lo !== 0;
+    });
+    if (withCoords.length === 0) {
+      res.status(400).json({ detail: 'У бригады нет заданий с координатами точек на сегодня' });
+      return;
+    }
+    try {
+      const resp = await callRobot('POST', '/maps/sync', {
+        json: {
+          name: `${crew.name} (${formatDateRu(today)})`,
+          url: crew.map_link || '',
+          points: withCoords.map((t) => ({
+            id: t.point,
+            lat: Number(t.lat),
+            lon: Number(t.lon),
+            address: t.address || '',
+            description: t.work || '',
+            status: t.status || '',
+          })),
+        },
+        timeoutMs: 30000,
+      });
+      const rData = (resp.jsonData || {}) as Record<string, unknown>;
+      if (typeof rData.url === 'string' && rData.url) {
+        db.prepare('UPDATE crews SET map_link = ? WHERE id = ?').run(rData.url, crewId);
+      }
+      res.json({
+        job_id: rData.job_id || null,
+        uptodate: Boolean(rData.uptodate),
+        url: rData.url || crew.map_link || '',
+        points: withCoords.length,
+        skipped: tasks.length - withCoords.length,
+        state: String(rData.state || 'running'),
+        kind: String(rData.kind || 'create'),
+        summary: String(rData.summary || ''),
+      });
+    } catch (err) {
+      res.status(err instanceof RobotUnavailableError ? 503 : 502).json({ detail: (err as Error).message });
+    }
   });
 
-  router.all('/api/yandex-robot/*rest', requirePasswordOk, (_req, res) => {
-    res.status(503).json({ detail: 'Робот браузера Яндекса не запущен в веб-среде.' });
+  router.get('/api/yandex-robot/jobs/:jobId', requirePasswordOk, (req, res) =>
+    proxyRobotJson(req, res, 'GET', `/jobs/${encodeURIComponent(req.params.jobId)}`),
+  );
+
+  router.get('/api/yandex-robot/jobs/:jobId/shot', requirePerm('admin.settings'), async (req, res) => {
+    try {
+      const resp = await callRobot('GET', `/jobs/${encodeURIComponent(req.params.jobId)}/shot`, { raw: true });
+      if (resp.status >= 400) {
+        res.status(404).json({ detail: 'Снимка нет' });
+        return;
+      }
+      res.setHeader('Content-Type', 'image/jpeg');
+      res.setHeader('Cache-Control', 'no-store');
+      res.send(resp.body);
+    } catch (err) {
+      res.status(err instanceof RobotUnavailableError ? 503 : 404).json({ detail: (err as Error).message });
+    }
   });
 
   // ================= AI SETTINGS & AGENTS =================
@@ -2794,6 +3074,9 @@ export function createStatsAndExtrasRouter(): Router {
   });
 
   // AI-Agents admin management
+  const AGENT_MODELS_DIR = path.join(DATA_DIR, 'agent_models');
+  const pendingAgentTests = new Map<string, (res: { ok: boolean; text: string; error?: string }) => void>();
+
   const getAgentsConfig = () => {
     const db = getDb();
     const row = db.prepare("SELECT value FROM app_flags WHERE key = 'ai_agents_config'").get() as { value: string } | undefined;
@@ -2805,6 +3088,21 @@ export function createStatsAndExtrasRouter(): Router {
     };
   };
 
+  function listAgentModels() {
+    try {
+      fs.mkdirSync(AGENT_MODELS_DIR, { recursive: true });
+      const files = fs.readdirSync(AGENT_MODELS_DIR);
+      return files.map((file) => {
+        const full = path.join(AGENT_MODELS_DIR, file);
+        const st = fs.statSync(full);
+        const valid = file.toLowerCase().endsWith('.gguf') && st.isFile() && st.size > 1024;
+        return { file, size: st.size, valid, sha256: valid ? 'ready' : '' };
+      });
+    } catch {
+      return [];
+    }
+  }
+
   router.get('/api/ai-agents', requirePerm('admin.settings'), (_req, res) => {
     const db = getDb();
     const cfg = getAgentsConfig();
@@ -2813,16 +3111,32 @@ export function createStatsAndExtrasRouter(): Router {
       Record<string, unknown>
     >;
     const agentNames = new Map(agents.map((a) => [String(a.id), String(a.name)]));
-    const nowIsoStr = nowIso();
+    const nowMs = Date.now();
+    const nowIsoStr = new Date(nowMs).toISOString();
+    let onlineCount = 0;
+    let freeCount = 0;
+    let busyCount = 0;
+
     const mappedAgents = agents.map((a) => {
       const hw = parseJsonSafe<Record<string, unknown>>(String(a.hardware || '{}'), {});
+      const lastSeenMs = a.last_seen ? Date.parse(String(a.last_seen)) : 0;
+      const isOnline = Boolean(a.enabled) && Number.isFinite(lastSeenMs) && (nowMs - lastSeenMs) / 1000 <= cfg.offline_after;
+      const agentState = String(hw.state || 'idle');
+      let statusLabel = 'offline';
+      if (!a.enabled) statusLabel = 'disabled';
+      else if (isOnline) {
+        onlineCount += 1;
+        statusLabel = agentState === 'busy' || agentState === 'loading' || agentState === 'paused' ? agentState : 'idle';
+        if (statusLabel === 'idle') freeCount += 1;
+        else if (statusLabel === 'busy') busyCount += 1;
+      }
       return {
         id: String(a.id),
         name: String(a.name),
         ip: String(a.last_ip || ''),
         version: String(a.version || ''),
         hw_code: String(a.hw_id || '').slice(0, 8),
-        status: a.enabled ? 'offline' : 'disabled',
+        status: statusLabel,
         cooldown: false,
         last_seen: String(a.last_seen || ''),
         model: String(a.model || ''),
@@ -2853,12 +3167,15 @@ export function createStatsAndExtrasRouter(): Router {
     });
     res.json({
       config: cfg,
-      summary: { total: mappedAgents.length, online: 0, free: 0, busy: 0 },
+      summary: { total: mappedAgents.length, online: onlineCount, free: freeCount, busy: busyCount },
       agents: mappedAgents,
       keys: mappedKeys,
-      models: [],
+      models: listAgentModels(),
       models_dir: 'data/agent_models',
-      models_recommended: [],
+      models_recommended: [
+        { file: 'qwen2.5-3b-instruct-q4_k_m.gguf', size_gb: 2.1, source: 'Qwen 2.5 3B' },
+        { file: 'qwen2.5-7b-instruct-q4_k_m.gguf', size_gb: 4.7, source: 'Qwen 2.5 7B' },
+      ],
     });
   });
 
@@ -2904,6 +3221,17 @@ export function createStatsAndExtrasRouter(): Router {
     res.json({ ok: true });
   });
 
+  router.delete('/api/ai-agents/models/:name', requirePerm('admin.settings'), (req, res) => {
+    const safeName = path.basename(decodeURIComponent(req.params.name));
+    const full = path.join(AGENT_MODELS_DIR, safeName);
+    if (!fs.existsSync(full) || !fs.statSync(full).isFile()) {
+      res.status(404).json({ detail: 'Файл модели не найден' });
+      return;
+    }
+    fs.unlinkSync(full);
+    res.json({ ok: true });
+  });
+
   router.put('/api/ai-agents/:agentId', requirePerm('admin.settings'), (req, res) => {
     const agentId = req.params.agentId;
     const db = getDb();
@@ -2929,15 +3257,204 @@ export function createStatsAndExtrasRouter(): Router {
     res.json({ ok: true });
   });
 
-  router.post('/api/ai-agents/:agentId/test', requirePerm('admin.settings'), (_req, res) => {
-    res.status(503).json({ detail: 'Компьютер-агент сейчас не в сети' });
+  router.post('/api/ai-agents/:agentId/test', requirePerm('admin.settings'), async (req, res) => {
+    const agentId = req.params.agentId;
+    const db = getDb();
+    const cfg = getAgentsConfig();
+    const agent = db.prepare('SELECT * FROM ai_agents WHERE id = ?').get(agentId) as Record<string, unknown> | undefined;
+    if (!agent) {
+      res.status(404).json({ detail: 'Компьютер не найден' });
+      return;
+    }
+    const lastMs = agent.last_seen ? Date.parse(String(agent.last_seen)) : 0;
+    if (!agent.enabled || !lastMs || (Date.now() - lastMs) / 1000 > cfg.offline_after) {
+      res.status(503).json({ detail: 'Компьютер-агент сейчас не в сети' });
+      return;
+    }
+    const jobId = `agtest_${crypto.randomBytes(6).toString('hex')}`;
+    const started = Date.now();
+    db.prepare("INSERT INTO ai_jobs (id, kind, owner, status, created_at, request) VALUES (?, 'agent_test', ?, 'queued', ?, ?)").run(
+      jobId,
+      agentId,
+      nowIso(),
+      JSON.stringify({ prompt: 'Ответь одним словом: Работаю' }),
+    );
+    const result = await new Promise<{ ok: boolean; text: string; error?: string }>((resolve) => {
+      const timer = setTimeout(() => {
+        pendingAgentTests.delete(jobId);
+        resolve({ ok: false, text: '', error: 'Агент не ответил за 25 секунд' });
+      }, 25000);
+      pendingAgentTests.set(jobId, (r) => {
+        clearTimeout(timer);
+        resolve(r);
+      });
+    });
+    if (!result.ok) {
+      res.status(503).json({ detail: result.error || 'Ошибка ответа агента' });
+      return;
+    }
+    res.json({ seconds: Math.round(((Date.now() - started) / 1000) * 10) / 10, text: result.text });
   });
 
   // Worker agent endpoints (/api/agent/*)
-  router.post('/api/agent/enroll', (_req, res) => {
-    res.status(403).json({ detail: 'Регистрация внешних ИИ-агентов требует активного туннеля' });
+  function requireAgentToken(req: Request): Record<string, unknown> | null {
+    const auth = String(req.headers.authorization || '');
+    const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
+    if (!token) return null;
+    const hash = crypto.createHash('sha256').update(token).digest('hex');
+    const row = getDb().prepare('SELECT * FROM ai_agents WHERE token_hash = ?').get(hash) as Record<string, unknown> | undefined;
+    return row || null;
+  }
+
+  router.post('/api/agent/enroll', (req, res) => {
+    const b = req.body || {};
+    const enrollKey = String(b.enroll_key || '').trim();
+    if (!enrollKey) {
+      res.status(403).json({ detail: 'Ключ подключения не указан' });
+      return;
+    }
+    const db = getDb();
+    const keyHash = crypto.createHash('sha256').update(enrollKey).digest('hex');
+    const keyRow = db.prepare('SELECT * FROM ai_agent_keys WHERE key_hash = ?').get(keyHash) as Record<string, unknown> | undefined;
+    const ip = clientIp(req);
+    if (!keyRow) {
+      recordSecurityEvent('admin_action', { ip, ok: false, details: 'отклонён неизвестный ключ ИИ-агента' });
+      res.status(403).json({ detail: 'Неверный ключ подключения' });
+      return;
+    }
+    if (keyRow.used) {
+      res.status(403).json({ detail: 'Этот ключ уже был использован' });
+      return;
+    }
+    if (String(keyRow.expires_at) < nowIso()) {
+      res.status(403).json({ detail: 'Срок действия ключа истёк' });
+      return;
+    }
+    const agentId = `ag_${crypto.randomBytes(6).toString('hex')}`;
+    const rawToken = crypto.randomBytes(24).toString('hex');
+    const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+    const name = String(b.name || 'Компьютер').trim().slice(0, 60) || 'Компьютер';
+    const now = nowIso();
+    db.prepare(
+      `INSERT INTO ai_agents (id, name, token_hash, hardware, model, version, enabled, hw_id, created_at, last_seen, last_ip)
+       VALUES (?, ?, ?, ?, '', ?, 1, ?, ?, ?, ?)`,
+    ).run(agentId, name, tokenHash, JSON.stringify(b.hardware || {}), String(b.version || '').slice(0, 30), String(b.hw_id || '').slice(0, 64), now, now, ip);
+    db.prepare('UPDATE ai_agent_keys SET used = 1, agent_id = ?, used_at = ? WHERE id = ?').run(agentId, now, Number(keyRow.id));
+    recordSecurityEvent('admin_action', { username: name, ip, details: `подключён ИИ-агент ${agentId}` });
+    res.json({ agent_id: agentId, token: rawToken, name });
   });
-  router.get('/api/agent/next', (_req, res) => res.json({ job: null, paused: true }));
+
+  router.post('/api/agent/heartbeat', (req, res) => {
+    const agent = requireAgentToken(req);
+    if (!agent) {
+      res.status(401).json({ detail: 'Неверный токен агента' });
+      return;
+    }
+    const state = (req.body?.state || {}) as Record<string, unknown>;
+    const prevHw = parseJsonSafe<Record<string, unknown>>(String(agent.hardware || '{}'), {});
+    const mergedHw = { ...prevHw, ...state };
+    getDb()
+      .prepare('UPDATE ai_agents SET hardware = ?, model = COALESCE(NULLIF(?, \'\'), model), params_b = COALESCE(NULLIF(?, 0), params_b), tps = COALESCE(NULLIF(?, 0), tps), last_seen = ?, last_ip = ? WHERE id = ?')
+      .run(
+        JSON.stringify(mergedHw),
+        String(state.model || ''),
+        Number(state.params_b || 0),
+        Number(state.tps || 0),
+        nowIso(),
+        clientIp(req),
+        String(agent.id),
+      );
+    const cfg = getAgentsConfig();
+    res.json({ ok: true, enabled: Boolean(cfg.enabled && agent.enabled) });
+  });
+
+  router.get('/api/agent/next', (req, res) => {
+    const agent = requireAgentToken(req);
+    if (!agent) {
+      res.status(401).json({ detail: 'Неверный токен агента' });
+      return;
+    }
+    const cfg = getAgentsConfig();
+    const db = getDb();
+    db.prepare('UPDATE ai_agents SET last_seen = ?, last_ip = ? WHERE id = ?').run(nowIso(), clientIp(req), String(agent.id));
+    if (!cfg.enabled || !agent.enabled) {
+      res.json({ job: null, paused: true });
+      return;
+    }
+    const job = db
+      .prepare("SELECT id, kind, request FROM ai_jobs WHERE status = 'queued' AND (owner = ? OR kind = 'chat') ORDER BY created_at ASC LIMIT 1")
+      .get(String(agent.id)) as { id: string; kind: string; request: string } | undefined;
+    if (!job) {
+      res.json({ job: null, paused: false });
+      return;
+    }
+    db.prepare("UPDATE ai_jobs SET status = 'running', started_at = ? WHERE id = ?").run(nowIso(), job.id);
+    res.json({ job: { id: job.id, kind: job.kind, request: parseJsonSafe(job.request, {}) }, paused: false });
+  });
+
+  router.get('/api/agent/models', (req, res) => {
+    const agent = requireAgentToken(req);
+    if (!agent) {
+      res.status(401).json({ detail: 'Неверный токен агента' });
+      return;
+    }
+    res.json({ models: listAgentModels().filter((m) => m.valid) });
+  });
+
+  router.get('/api/agent/models/:name', (req, res) => {
+    const agent = requireAgentToken(req);
+    if (!agent) {
+      res.status(401).json({ detail: 'Неверный токен агента' });
+      return;
+    }
+    const cfg = getAgentsConfig();
+    if (!cfg.enabled || !agent.enabled) {
+      res.status(403).json({ detail: 'Режим ИИ-агентов выключен' });
+      return;
+    }
+    const full = path.join(AGENT_MODELS_DIR, path.basename(req.params.name));
+    if (!fs.existsSync(full) || !fs.statSync(full).isFile()) {
+      res.status(404).json({ detail: 'Модель не найдена' });
+      return;
+    }
+    res.sendFile(full);
+  });
+
+  router.post('/api/agent/result/:jobId', (req, res) => {
+    const agent = requireAgentToken(req);
+    if (!agent) {
+      res.status(401).json({ detail: 'Неверный токен агента' });
+      return;
+    }
+    const jobId = req.params.jobId;
+    const b = req.body || {};
+    const errText = String(b.error || '');
+    const text = String(b.text || '');
+    const db = getDb();
+    const job = db.prepare('SELECT id FROM ai_jobs WHERE id = ?').get(jobId);
+    if (!job) {
+      res.status(404).json({ detail: 'Задание не найдено' });
+      return;
+    }
+    db.prepare('UPDATE ai_jobs SET status = ?, finished_at = ?, result = ?, error = ? WHERE id = ?').run(
+      errText ? 'error' : 'done',
+      nowIso(),
+      text,
+      errText,
+      jobId,
+    );
+    if (errText) {
+      db.prepare('UPDATE ai_agents SET jobs_failed = jobs_failed + 1 WHERE id = ?').run(String(agent.id));
+    } else {
+      db.prepare('UPDATE ai_agents SET jobs_done = jobs_done + 1 WHERE id = ?').run(String(agent.id));
+    }
+    const cb = pendingAgentTests.get(jobId);
+    if (cb) {
+      pendingAgentTests.delete(jobId);
+      cb({ ok: !errText, text, error: errText || undefined });
+    }
+    res.json({ ok: true });
+  });
 
   // ================= ASSISTANT (/api/assistant/*) =================
   router.get('/api/assistant/info', requirePasswordOk, (req: AuthedRequest, res) => {

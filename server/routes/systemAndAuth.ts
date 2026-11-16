@@ -26,6 +26,7 @@ import { BACKUP_DIR, DB_PATH, settings } from '../config.ts';
 import { getFieldKeyBase64, setFieldKey, tryDecryptWithKey } from '../crypto.ts';
 import { closeDb, getDb, initDb, nowIso, reopenDb } from '../db.ts';
 import { ALL, BUILTIN_ROLES, CATALOG, expandPerms, IMPLIES, isSubsetPerms, landingPage } from '../permissions.ts';
+import { getRuntimeFact, getTasksStatus, runIntegrityCheckNow } from '../services/background.ts';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 100 * 1024 * 1024 } });
 
@@ -749,14 +750,199 @@ export function createSystemAndAuthRouter(): Router {
   });
 
   // ---- SYSTEM ----
-  router.get('/api/system/health', requirePerm('admin.system'), (_req, res) => {
+  function collectSystemHealth() {
     const db = getDb();
+    const checkedAt = nowIso();
+    const uptimeSeconds = Math.round(process.uptime());
+    const items: Array<{
+      key: string;
+      title: string;
+      level: 'ok' | 'warn' | 'bad';
+      value: string;
+      hint: string;
+      orphans?: Array<{ id: string; photos: number; tasks: number; suggest: string }>;
+    }> = [];
+
+    // 1. Disk space
+    try {
+      const statfs = fs.statfsSync(path.dirname(DB_PATH));
+      const total = Number(statfs.blocks) * Number(statfs.bsize);
+      const free = Number(statfs.bavail) * Number(statfs.bsize);
+      const freePct = total > 0 ? Math.round((free / total) * 100) : 100;
+      const freeGb = (free / 1e9).toFixed(1);
+      const totalGb = (total / 1e9).toFixed(1);
+      const level: 'ok' | 'warn' | 'bad' =
+        free < 2e9 || freePct < 3 ? 'bad' : free < 6e9 || freePct < 10 ? 'warn' : 'ok';
+      items.push({
+        key: 'disk',
+        title: 'Место на диске',
+        level,
+        value: `свободно ${freeGb} ГБ из ${totalGb} ГБ (${freePct}%)`,
+        hint: level === 'ok' ? '' : 'На диске мало места — освободите место для базы, копий и фото.',
+      });
+    } catch {
+      items.push({
+        key: 'disk',
+        title: 'Место на диске',
+        level: 'ok',
+        value: 'доступно',
+        hint: '',
+      });
+    }
+
+    // 2. Database & integrity
     let dbBytes = 0;
+    let walBytes = 0;
     try {
       dbBytes = fs.statSync(DB_PATH).size;
+      const walPath = `${DB_PATH}-wal`;
+      if (fs.existsSync(walPath)) walBytes = fs.statSync(walPath).size;
     } catch {
       dbBytes = 0;
     }
+    const dbMb = (dbBytes / (1024 * 1024)).toFixed(1);
+    const integ = getRuntimeFact<{ ok: boolean; seconds: number; detail: string; at: number }>('integrity');
+    let dbLevel: 'ok' | 'warn' | 'bad' = dbBytes > 0 ? 'ok' : 'bad';
+    let dbValue = `${dbMb} МБ`;
+    let dbHint = '';
+    if (dbBytes === 0) {
+      dbValue = 'файл базы не найден';
+      dbHint = 'Проверьте каталог data/.';
+    } else if (!integ) {
+      dbValue = `${dbMb} МБ; автопроверка запустится через минуту после старта`;
+    } else if (!integ.ok) {
+      dbLevel = 'bad';
+      dbValue = `${dbMb} МБ; ПРОВЕРКА ЦЕЛОСТНОСТИ НЕ ПРОЙДЕНА`;
+      dbHint = `${integ.detail}. Сделайте резервную копию и проверьте базу.`;
+    } else if (walBytes > 512 * 1024 * 1024) {
+      dbLevel = 'warn';
+      dbValue = `${dbMb} МБ; целостность в порядке (${integ.seconds} с), большой WAL`;
+      dbHint = 'Журнал записи базы разросся — перезапуск приложения его сожмёт.';
+    } else {
+      dbValue = `${dbMb} МБ; целостность в порядке (${integ.seconds} с)`;
+    }
+    items.push({ key: 'db', title: 'База данных', level: dbLevel, value: dbValue, hint: dbHint });
+
+    // 3. Backups
+    let dailyCount = 0;
+    let recentCount = 0;
+    let newestMtime = 0;
+    let newestSize = 0;
+    try {
+      for (const f of fs.readdirSync(BACKUP_DIR)) {
+        if (/^calendar-\d{4}-\d{2}-\d{2}\.db$/.test(f) || /^recent-\d+\.db$/.test(f)) {
+          if (f.startsWith('calendar-')) dailyCount += 1;
+          else recentCount += 1;
+          const st = fs.statSync(path.join(BACKUP_DIR, f));
+          if (st.mtimeMs > newestMtime) {
+            newestMtime = st.mtimeMs;
+            newestSize = st.size;
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+    if (dailyCount + recentCount === 0) {
+      items.push({
+        key: 'backup',
+        title: 'Резервные копии',
+        level: 'warn',
+        value: 'копий ещё нет',
+        hint: 'Плановая копия создаётся при запуске и раз в сутки.',
+      });
+    } else {
+      const ageHours = (Date.now() - newestMtime) / 3600_000;
+      const bLevel: 'ok' | 'warn' | 'bad' = ageHours < 30 ? 'ok' : ageHours < 72 ? 'warn' : 'bad';
+      const sizeMb = (newestSize / (1024 * 1024)).toFixed(1);
+      items.push({
+        key: 'backup',
+        title: 'Резервные копии',
+        level: bLevel,
+        value: `ежедневных: ${dailyCount}, снимков: ${recentCount}, свежая: ${sizeMb} МБ`,
+        hint: bLevel === 'ok' ? '' : 'Давно не создавалась новая копия — проверьте диск.',
+      });
+    }
+
+    // 4. Background tasks
+    const tasks = getTasksStatus();
+    const failedTasks = tasks.filter((t) => t.lastOk === false);
+    items.push({
+      key: 'tasks',
+      title: 'Фоновые задачи',
+      level: failedTasks.length ? 'warn' : 'ok',
+      value: failedTasks.length
+        ? `ошибка в задаче: ${failedTasks.map((t) => t.name).join(', ')}`
+        : `активно: ${tasks.length}`,
+      hint: failedTasks.length ? failedTasks[0].lastError : '',
+    });
+
+    // 5. Orphaned point references
+    const knownIds = new Set(
+      (db.prepare('SELECT id FROM points').all() as Array<{ id: string }>).map((r) => r.id),
+    );
+    const orphanCounts = new Map<string, { photos: number; tasks: number }>();
+    const taskOrphans = db
+      .prepare("SELECT point, COUNT(*) as c FROM tasks WHERE point != '' GROUP BY point")
+      .all() as Array<{ point: string; c: number }>;
+    for (const r of taskOrphans) {
+      if (!knownIds.has(r.point)) {
+        orphanCounts.set(r.point, { photos: 0, tasks: r.c });
+      }
+    }
+    const photoOrphans = db
+      .prepare("SELECT point_id, COUNT(*) as c FROM visit_photos WHERE point_id != '' GROUP BY point_id")
+      .all() as Array<{ point_id: string; c: number }>;
+    for (const r of photoOrphans) {
+      if (!knownIds.has(r.point_id)) {
+        const cur = orphanCounts.get(r.point_id) || { photos: 0, tasks: 0 };
+        cur.photos += r.c;
+        orphanCounts.set(r.point_id, cur);
+      }
+    }
+    const orphansList = Array.from(orphanCounts.entries())
+      .slice(0, 15)
+      .map(([id, c]) => ({
+        id,
+        photos: c.photos,
+        tasks: c.tasks,
+        suggest: '',
+      }));
+    if (orphansList.length > 0) {
+      items.push({
+        key: 'point_refs',
+        title: 'Ссылки на удалённые номера',
+        level: 'warn',
+        value: `найдено ${orphanCounts.size}`,
+        hint: 'Есть задания или фото на номера комплексов, которых нет в справочнике. Можно привязать их к нужному номеру.',
+        orphans: orphansList,
+      });
+    } else {
+      items.push({
+        key: 'point_refs',
+        title: 'Ссылки на комплексы',
+        level: 'ok',
+        value: 'бесхозных записей нет',
+        hint: '',
+      });
+    }
+
+    // 6. Gemini AI status
+    const hasGemini = Boolean((process.env.GEMINI_API_KEY || settings.geminiApiKey || '').trim());
+    items.push({
+      key: 'ai',
+      title: 'ИИ-помощник',
+      level: 'ok',
+      value: hasGemini ? 'подключён (GEMINI_API_KEY задан)' : 'локальная сводка (без внешнего ключа ИИ)',
+      hint: '',
+    });
+
+    const overallLevel: 'ok' | 'warn' | 'bad' = items.some((i) => i.level === 'bad')
+      ? 'bad'
+      : items.some((i) => i.level === 'warn')
+        ? 'warn'
+        : 'ok';
+
     const mem = process.memoryUsage();
     const counts = {
       points: (db.prepare('SELECT COUNT(*) as c FROM points').get() as { c: number }).c,
@@ -766,24 +952,35 @@ export function createSystemAndAuthRouter(): Router {
       reports: (db.prepare('SELECT COUNT(*) as c FROM task_visit_reports').get() as { c: number }).c,
       equipment: (db.prepare('SELECT COUNT(*) as c FROM equipment').get() as { c: number }).c,
     };
-    res.json({
-      ok: true,
+
+    return {
+      ok: overallLevel !== 'bad',
+      level: overallLevel,
+      checked_at: checkedAt,
+      uptime_seconds: uptimeSeconds,
       runtime: `Node.js ${process.version}`,
-      uptime_seconds: Math.round(process.uptime()),
       db_size_bytes: dbBytes,
       memory_rss_mb: Math.round(mem.rss / (1024 * 1024)),
       counts,
-      integrity: { ok: true, message: 'OK' },
-    });
+      items,
+      integrity: integ ? { ok: integ.ok, message: integ.detail } : { ok: true, message: 'OK' },
+    };
+  }
+
+  router.get('/api/system/health', requirePerm('admin.system'), (_req, res) => {
+    res.json(collectSystemHealth());
   });
 
   router.get('/api/system/summary', requirePerm('admin.system'), (_req, res) => {
     const db = getDb();
+    const h = collectSystemHealth();
     res.json({
+      level: h.level,
+      problems: h.items.filter((i) => i.level !== 'ok').map((i) => ({ title: i.title, value: i.value })),
       users: (db.prepare('SELECT COUNT(*) as c FROM users').get() as { c: number }).c,
-      points: (db.prepare('SELECT COUNT(*) as c FROM points').get() as { c: number }).c,
-      tasks: (db.prepare('SELECT COUNT(*) as c FROM tasks').get() as { c: number }).c,
-      equipment: (db.prepare('SELECT COUNT(*) as c FROM equipment').get() as { c: number }).c,
+      points: h.counts.points,
+      tasks: h.counts.tasks,
+      equipment: h.counts.equipment,
     });
   });
 
@@ -817,12 +1014,12 @@ export function createSystemAndAuthRouter(): Router {
       const info = db.prepare(`UPDATE ${table} SET ${col} = ? WHERE ${col} = ?`).run(newId, oldId);
       updated += Number(info.changes || 0);
     }
-    res.json({ ok: true, moved: updated });
+    res.json({ ok: true, total: updated, moved: updated });
   });
 
   router.post('/api/system/integrity', requirePerm('admin.system'), (_req, res) => {
-    const row = getDb().prepare('PRAGMA integrity_check').get() as { integrity_check: string };
-    res.json({ ok: row?.integrity_check === 'ok', result: row?.integrity_check || 'unknown' });
+    const fact = runIntegrityCheckNow();
+    res.json({ ok: fact.ok, seconds: fact.seconds, detail: fact.detail, result: fact.detail });
   });
 
   return router;

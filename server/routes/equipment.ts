@@ -1,9 +1,14 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import zlib from 'node:zlib';
 import { Router } from 'express';
 import ExcelJS from 'exceljs';
 import multer from 'multer';
 import { requirePasswordOk, requirePerm, type AuthedRequest } from '../auth.ts';
-import { decryptField } from '../crypto.ts';
-import { getDb, nowIso } from '../db.ts';
+import { decryptField, encryptField } from '../crypto.ts';
+import { bumpStateRev, getDb, nowIso } from '../db.ts';
 import { networkOk, secretsOk } from '../permissions.ts';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
@@ -969,8 +974,383 @@ export function createEquipmentRouter(): Router {
     res.json({ ok: true, added });
   });
 
-  router.post('/api/equipment/import/sklad', upload.single('file'), (_req, res) => {
-    res.json({ ok: true, imported: 0 });
+  router.post('/api/equipment/import/sklad', upload.single('file'), (req: AuthedRequest, res) => {
+    if (!req.file || !req.file.buffer?.length) {
+      res.status(400).json({ detail: 'Выберите файл warehouse.db' });
+      return;
+    }
+    const mode = String(req.body?.mode || 'merge').trim();
+    if (mode !== 'merge' && mode !== 'overwrite') {
+      res.status(400).json({ detail: 'Неизвестный режим импорта' });
+      return;
+    }
+    const dryRun = String(req.body?.dry_run ?? 'true').toLowerCase() !== 'false';
+    const importHistory = String(req.body?.import_history ?? 'true').toLowerCase() !== 'false';
+
+    let raw = req.file.buffer;
+    if (raw.length >= 2 && raw[0] === 0x1f && raw[1] === 0x8b) {
+      try {
+        raw = zlib.gunzipSync(raw);
+      } catch {
+        res.status(400).json({ detail: 'Не удалось распаковать файл (.gz)' });
+        return;
+      }
+    }
+    if (!raw.subarray(0, 16).toString('utf-8').startsWith('SQLite format 3')) {
+      res.status(400).json({ detail: 'Это не файл базы SQLite. Нужен warehouse.db из приложения «Склад».' });
+      return;
+    }
+
+    const tmpFile = path.join(os.tmpdir(), `sklad-${Date.now()}-${Math.random().toString(16).slice(2)}.db`);
+    let srcDb: DatabaseSync | null = null;
+    const db = getDb();
+    try {
+      fs.writeFileSync(tmpFile, raw);
+      srcDb = new DatabaseSync(tmpFile, { readOnly: true });
+      const tableNames = new Set(
+        (srcDb.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map(
+          (r) => r.name,
+        ),
+      );
+      if (!tableNames.has('equipment') && !tableNames.has('complexes')) {
+        res.status(400).json({ detail: 'В файле нет таблиц «Склада» (equipment / complexes) — это не его база.' });
+        return;
+      }
+
+      const readTable = (tbl: string): Array<Record<string, unknown>> => {
+        if (!tableNames.has(tbl)) return [];
+        try {
+          return srcDb!.prepare(`SELECT * FROM "${tbl}"`).all() as Array<Record<string, unknown>>;
+        } catch {
+          return [];
+        }
+      };
+
+      const src = {
+        categories: readTable('categories'),
+        models: readTable('models'),
+        installers: readTable('installers'),
+        complex_categories: readTable('complex_categories'),
+        complex_statuses: readTable('complex_statuses'),
+        complexes: readTable('complexes'),
+        solar_panels: readTable('solar_panels'),
+        equipment: readTable('equipment'),
+        history: readTable('history'),
+      };
+
+      const s = (v: unknown): string => (v == null ? '' : String(v).trim());
+      const report = {
+        dry_run: dryRun,
+        mode,
+        source: Object.fromEntries(Object.entries(src).map(([k, v]) => [k, v.length])),
+        equipment_categories: { created: 0, existing: 0 },
+        models: { created: 0, existing: 0 },
+        people: { created: 0, matched: 0, created_names: [] as string[] },
+        point_categories: { created: 0, existing: 0 },
+        points: { created: 0, matched: 0, filled: 0, created_names: [] as string[] },
+        panels: { created: 0, existing: 0, linked: 0 },
+        equipment: {
+          created: 0,
+          existing: 0,
+          updated: 0,
+          filled: 0,
+          conflicts: [] as Array<Record<string, unknown>>,
+          conflict_count: 0,
+        },
+        history: { added: 0, duplicates: 0 },
+        warnings: [] as string[],
+      };
+
+      const now = nowIso();
+      const overwrite = mode === 'overwrite';
+
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        const okId = (
+          db.prepare("SELECT id FROM equipment_statuses WHERE role = 'ok' LIMIT 1").get() as { id: number } | undefined
+        )?.id ?? null;
+
+        // 1. Equipment categories
+        const catMap = new Map<unknown, number>();
+        for (const c of src.categories) {
+          const name = s(c.name);
+          if (!name) continue;
+          const existing = db.prepare('SELECT id FROM equipment_categories WHERE lower(name) = lower(?)').get(name) as
+            | { id: number }
+            | undefined;
+          if (existing) {
+            catMap.set(c.id, existing.id);
+            report.equipment_categories.existing += 1;
+          } else {
+            const info = db.prepare("INSERT INTO equipment_categories (name, kind) VALUES (?, '')").run(name);
+            catMap.set(c.id, Number(info.lastInsertRowid));
+            report.equipment_categories.created += 1;
+          }
+        }
+
+        // 2. Models
+        const modelMap = new Map<unknown, number>();
+        for (const m of src.models) {
+          const name = s(m.name);
+          const cid = catMap.get(m.category_id);
+          if (!name || !cid) continue;
+          const existing = db
+            .prepare('SELECT id FROM equipment_models WHERE category_id = ? AND lower(name) = lower(?)')
+            .get(cid, name) as { id: number } | undefined;
+          if (existing) {
+            modelMap.set(m.id, existing.id);
+            report.models.existing += 1;
+          } else {
+            const info = db.prepare('INSERT INTO equipment_models (category_id, name) VALUES (?, ?)').run(cid, name);
+            modelMap.set(m.id, Number(info.lastInsertRowid));
+            report.models.created += 1;
+          }
+        }
+
+        // 3. People (installers -> fitters)
+        const personMap = new Map<unknown, number>();
+        const existingPeople = db.prepare('SELECT id, full_name FROM people').all() as Array<{
+          id: number;
+          full_name: string;
+        }>;
+        const peopleByName = new Map(existingPeople.map((p) => [decryptField(p.full_name).trim().toLowerCase(), p.id]));
+        for (const i of src.installers) {
+          const name = s(i.full_name);
+          if (!name) continue;
+          const matchedId = peopleByName.get(name.toLowerCase());
+          if (matchedId) {
+            personMap.set(i.id, matchedId);
+            report.people.matched += 1;
+          } else {
+            const info = db
+              .prepare(
+                "INSERT INTO people (full_name, phone, role_type, active, notes, created_at) VALUES (?, ?, 'fitter', ?, ?, ?)",
+              )
+              .run(
+                encryptField(name),
+                s(i.phone) ? encryptField(s(i.phone)) : '',
+                i.active === 0 ? 0 : 1,
+                'Добавлен при импорте из «Склада»',
+                now,
+              );
+            const newPid = Number(info.lastInsertRowid);
+            personMap.set(i.id, newPid);
+            peopleByName.set(name.toLowerCase(), newPid);
+            report.people.created += 1;
+            if (report.people.created_names.length < 30) report.people.created_names.push(name);
+          }
+        }
+
+        // 4. Point categories & complexes -> points
+        const ccById = new Map(src.complex_categories.map((c) => [c.id, c]));
+        const csById = new Map(src.complex_statuses.map((st) => [st.id, st]));
+        const pcCache = new Map<unknown, number | null>();
+        const pointMap = new Map<unknown, string>();
+
+        for (const cx of src.complexes) {
+          const name = s(cx.name);
+          const inv = s(cx.inventory_number);
+          if (!name && !inv) continue;
+
+          let pointId: string | null = null;
+          if (inv) {
+            const byInv = db
+              .prepare('SELECT id FROM points WHERE lower(trim(inventory_number)) = lower(?) LIMIT 1')
+              .get(inv) as { id: string } | undefined;
+            if (byInv) pointId = byInv.id;
+          }
+          if (!pointId && name) {
+            const byId = db.prepare('SELECT id, inventory_number FROM points WHERE lower(id) = lower(?)').get(name) as
+              | { id: string; inventory_number: string }
+              | undefined;
+            if (byId && (!s(byId.inventory_number) || !inv || s(byId.inventory_number).toLowerCase() === inv.toLowerCase())) {
+              pointId = byId.id;
+            }
+          }
+
+          let categoryId: number | null = null;
+          const cat = ccById.get(cx.category_id);
+          if (cat && s(cat.name)) {
+            if (pcCache.has(cat.id)) {
+              categoryId = pcCache.get(cat.id) ?? null;
+            } else {
+              const existingPc = db
+                .prepare('SELECT id FROM point_categories WHERE lower(name) = lower(?)')
+                .get(s(cat.name)) as { id: number } | undefined;
+              if (existingPc) {
+                categoryId = existingPc.id;
+                report.point_categories.existing += 1;
+              } else {
+                const info = db
+                  .prepare('INSERT INTO point_categories (name, color) VALUES (?, ?)')
+                  .run(s(cat.name), s(cat.color) || '#6366f1');
+                categoryId = Number(info.lastInsertRowid);
+                report.point_categories.created += 1;
+              }
+              pcCache.set(cat.id, categoryId);
+            }
+          }
+
+          if (pointId) {
+            report.points.matched += 1;
+            let filled = 0;
+            for (const [col, val] of [
+              ['address', s(cx.location)],
+              ['notes', s(cx.notes)],
+              ['inventory_number', inv],
+            ] as const) {
+              if (val) {
+                const inf = db
+                  .prepare(`UPDATE points SET ${col} = ? WHERE id = ? AND coalesce(${col}, '') = ''`)
+                  .run(val, pointId);
+                filled += Number(inf.changes || 0);
+              }
+            }
+            if (categoryId) {
+              const inf = db
+                .prepare('UPDATE points SET category_id = ? WHERE id = ? AND category_id IS NULL')
+                .run(categoryId, pointId);
+              filled += Number(inf.changes || 0);
+            }
+            if (filled > 0) report.points.filled += 1;
+            pointMap.set(cx.id, pointId);
+          } else {
+            const newId = name || inv;
+            const stRow = csById.get(cx.status_id);
+            const stName = s(stRow?.name) || 'На складе';
+            db.prepare(
+              `INSERT OR IGNORE INTO points (id, address, notes, inventory_number, status, category_id)
+               VALUES (?, ?, ?, ?, ?, ?)`,
+            ).run(newId, s(cx.location), s(cx.notes), inv, stName, categoryId);
+            pointMap.set(cx.id, newId);
+            report.points.created += 1;
+            if (report.points.created_names.length < 30) report.points.created_names.push(newId);
+          }
+        }
+
+        // 5. Solar panels
+        for (const sp of src.solar_panels) {
+          const panelNumber = s(sp.panel_number || sp.number || sp.name);
+          if (!panelNumber) continue;
+          const mappedPoint = sp.complex_id != null ? pointMap.get(sp.complex_id) ?? null : null;
+          const existing = db.prepare('SELECT id FROM solar_panels WHERE lower(panel_number) = lower(?)').get(panelNumber) as
+            | { id: number }
+            | undefined;
+          if (existing) {
+            report.panels.existing += 1;
+            if (mappedPoint && overwrite) {
+              db.prepare('UPDATE solar_panels SET point_id = ?, updated_at = ? WHERE id = ?').run(mappedPoint, now, existing.id);
+              report.panels.linked += 1;
+            }
+          } else {
+            db.prepare(
+              'INSERT INTO solar_panels (panel_number, point_id, location, notes, at_warehouse, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            ).run(panelNumber, mappedPoint, s(sp.location), s(sp.notes), sp.at_warehouse ? 1 : 0, now, now);
+            report.panels.created += 1;
+            if (mappedPoint) report.panels.linked += 1;
+          }
+        }
+
+        // 6. Equipment items
+        for (const eqRow of src.equipment) {
+          const serial = s(eqRow.serial_number);
+          const modelId = modelMap.get(eqRow.model_id);
+          if (!serial || !modelId) continue;
+          const mappedPoint = eqRow.complex_id != null ? pointMap.get(eqRow.complex_id) ?? null : null;
+          const mappedPerson = eqRow.installer_id != null ? personMap.get(eqRow.installer_id) ?? null : null;
+          const place = mappedPoint ? 'point' : mappedPerson ? 'person' : s(eqRow.place) || 'stock';
+          const existing = db.prepare('SELECT id, place, point_id, person_id, notes FROM equipment WHERE lower(serial_number) = lower(?)').get(serial) as
+            | { id: number; place: string; point_id: string | null; person_id: number | null; notes: string | null }
+            | undefined;
+          if (existing) {
+            report.equipment.existing += 1;
+            if (overwrite) {
+              db.prepare(
+                'UPDATE equipment SET model_id = ?, place = ?, point_id = ?, person_id = ?, notes = ?, updated_at = ? WHERE id = ?',
+              ).run(modelId, place, mappedPoint, mappedPerson, s(eqRow.notes) || existing.notes, now, existing.id);
+              report.equipment.updated += 1;
+            }
+          } else {
+            db.prepare(
+              `INSERT INTO equipment (model_id, serial_number, place, status_id, point_id, person_id, received_date, installed_date, notes, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            ).run(
+              modelId,
+              serial,
+              place,
+              okId,
+              mappedPoint,
+              mappedPerson,
+              s(eqRow.received_date) || now.slice(0, 10),
+              s(eqRow.installed_date) || null,
+              s(eqRow.notes) || null,
+              now,
+              now,
+            );
+            report.equipment.created += 1;
+          }
+        }
+
+        // 7. History
+        if (importHistory) {
+          for (const h of src.history) {
+            const serial = s(h.serial_number);
+            const action = s(h.action_type || h.action || 'import');
+            const ts = s(h.ts || h.created_at) || now;
+            const dup = serial
+              ? db.prepare('SELECT id FROM equipment_history WHERE serial_number = ? AND ts = ? AND action_type = ? LIMIT 1').get(serial, ts, action)
+              : null;
+            if (dup) {
+              report.history.duplicates += 1;
+            } else {
+              db.prepare(
+                'INSERT INTO equipment_history (ts, serial_number, model_name, action_type, person_name, point_id, performed_by, comment, event_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+              ).run(
+                ts,
+                serial || null,
+                s(h.model_name) || null,
+                action,
+                s(h.person_name) || null,
+                s(h.point_id) || null,
+                req.sessionUser?.username || 'sklad_import',
+                s(h.comment) || null,
+                s(h.event_date) || ts.slice(0, 10),
+              );
+              report.history.added += 1;
+            }
+          }
+        }
+
+        if (dryRun) {
+          db.exec('ROLLBACK');
+        } else {
+          db.exec('COMMIT');
+          bumpStateRev();
+        }
+      } catch (innerErr) {
+        try {
+          db.exec('ROLLBACK');
+        } catch {
+          // ignore
+        }
+        throw innerErr;
+      }
+
+      res.json(report);
+    } catch (err) {
+      res.status(400).json({ detail: `Не удалось прочитать файл «Склада»: ${(err as Error).message}` });
+    } finally {
+      try {
+        srcDb?.close();
+      } catch {
+        // ignore
+      }
+      try {
+        if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile);
+      } catch {
+        // ignore
+      }
+    }
   });
 
   // ---- WAREHOUSE (/api/warehouse/*) ----

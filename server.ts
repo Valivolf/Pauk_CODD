@@ -13,6 +13,7 @@ import { createPointsRouter } from './server/routes/points.ts';
 import { createReportsRouter } from './server/routes/reports.ts';
 import { createStatsAndExtrasRouter } from './server/routes/statsAndExtras.ts';
 import { createSystemAndAuthRouter } from './server/routes/systemAndAuth.ts';
+import { startBackgroundServices } from './server/services/background.ts';
 import { registerViewRoutes } from './server/views.ts';
 
 function startServer(): void {
@@ -72,6 +73,7 @@ function startServer(): void {
   const port = Number(process.env.PORT || 3000);
   app.listen(port, '0.0.0.0', () => {
     console.log(`CODD_SPIDER Node.js server listening on http://0.0.0.0:${port}`);
+    startBackgroundServices();
     const vkToken = (process.env.VK_TOKEN || '').trim();
     if (process.env.BOT_EMBEDDED !== 'false' && vkToken) {
       startBot({

@@ -1,5 +1,4 @@
 import fs from 'node:fs';
-import net from 'node:net';
 import path from 'node:path';
 import { Router } from 'express';
 import ExcelJS from 'exceljs';
@@ -9,6 +8,8 @@ import { POINT_FILES_DIR } from '../config.ts';
 import { decryptField, encryptField } from '../crypto.ts';
 import { bumpStateRev, getDb, nowIso } from '../db.ts';
 import { networkOk, secretsOk } from '../permissions.ts';
+import { syncUnrepairedGroup } from '../services/background.ts';
+import { checkTcpPort, pingHost } from '../services/networkCheck.ts';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 
@@ -88,29 +89,6 @@ function getOrCreateCategory(name: string, color: string): number | null {
     .prepare('INSERT INTO point_categories (name, color) VALUES (?, ?)')
     .run(clean, color.trim() || '#6366f1');
   return Number(info.lastInsertRowid);
-}
-
-function probeTcp(host: string, portNum: number, timeoutMs = 2500): Promise<{ ok: boolean; latency_ms: number; error?: string }> {
-  return new Promise((resolve) => {
-    const cleanHost = host.trim();
-    if (!cleanHost) {
-      resolve({ ok: false, latency_ms: 0, error: 'IP-адрес не указан' });
-      return;
-    }
-    const start = Date.now();
-    const sock = net.createConnection({ host: cleanHost, port: portNum });
-    let settled = false;
-    const finish = (ok: boolean, error?: string) => {
-      if (settled) return;
-      settled = true;
-      sock.destroy();
-      resolve({ ok, latency_ms: Date.now() - start, error });
-    };
-    sock.setTimeout(timeoutMs);
-    sock.on('connect', () => finish(true));
-    sock.on('timeout', () => finish(false, 'Тайм-аут соединения'));
-    sock.on('error', (err) => finish(false, err.message));
-  });
 }
 
 export function createPointsRouter(): Router {
@@ -470,14 +448,26 @@ export function createPointsRouter(): Router {
       res.status(404).json({ detail: 'Точка не найдена' });
       return;
     }
+    const ip = String(point.ip_address || '');
+    const pingRes = await pingHost(ip, 2, 2);
+    if (!pingRes.binary_missing) {
+      db.prepare('UPDATE points SET health_checked_at = ? WHERE id = ?').run(nowIso(), pointId);
+      res.json({
+        ok: pingRes.ok,
+        reachable: pingRes.ok,
+        latency_ms: pingRes.latency_ms,
+        detail: pingRes.detail,
+      });
+      return;
+    }
     const port = Number(point.port) || 80;
-    const probe = await probeTcp(String(point.ip_address || ''), port);
+    const probe = await checkTcpPort(ip, port);
     db.prepare('UPDATE points SET health_checked_at = ? WHERE id = ?').run(nowIso(), pointId);
     res.json({
       ok: probe.ok,
       reachable: probe.ok,
       latency_ms: probe.latency_ms,
-      detail: probe.error || (probe.ok ? 'Доступен' : 'Не отвечает'),
+      detail: probe.detail,
     });
   });
 
@@ -490,14 +480,16 @@ export function createPointsRouter(): Router {
       return;
     }
     const port = Number(point.port) || 80;
-    const probe = await probeTcp(String(point.ip_address || ''), port);
-    db.prepare('UPDATE points SET health_checked_at = ? WHERE id = ?').run(nowIso(), pointId);
+    const probe = await checkTcpPort(String(point.ip_address || ''), port);
+    const now = nowIso();
+    const downSince = probe.ok ? null : (point.port_down_since ? String(point.port_down_since) : now);
+    db.prepare('UPDATE points SET health_checked_at = ?, port_down_since = ? WHERE id = ?').run(now, downSince, pointId);
     res.json({
       ok: probe.ok,
       open: probe.ok,
       port,
       latency_ms: probe.latency_ms,
-      detail: probe.error || (probe.ok ? 'Порт открыт' : 'Порт недоступен'),
+      detail: probe.detail,
     });
   });
 
@@ -975,6 +967,7 @@ export function createPointsRouter(): Router {
 
   // ---- APK GROUPS ----
   router.get('/api/apk-groups', (_req, res) => {
+    syncUnrepairedGroup(false);
     const db = getDb();
     const groups = db.prepare('SELECT * FROM apk_groups ORDER BY id').all() as Array<Record<string, unknown>>;
     const counts = db

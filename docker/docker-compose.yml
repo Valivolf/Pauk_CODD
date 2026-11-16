@@ -1,0 +1,173 @@
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+services:
+  lan-calendar:
+    logging: *default-logging
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 8s
+      retries: 3
+      start_period: 45s
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: lan-calendar:latest
+    container_name: lan-calendar
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - default
+      - ai_internal
+    ports:
+      - "127.0.0.1:3000:3000"
+    env_file:
+      - path: ../.env
+        required: false
+    environment:
+      PORT: "3000"
+      TZ: "${APP_TZ:-Europe/Moscow}"
+      BOT_EMBEDDED: "false"
+      YANDEX_ROBOT_URL: "${YANDEX_ROBOT_URL:-http://yandex-robot:8100}"
+    volumes:
+      - ../data:/app/data
+      - ../backups:/app/backups
+      - type: bind
+        source: ${PHOTOS_HOST_DIR:-/mnt/lan-calendar-photos}
+        target: /app/photos
+        bind:
+          create_host_path: true
+          propagation: rslave
+
+  codd-bot:
+    logging: *default-logging
+    image: lan-calendar:latest
+    container_name: codd-bot
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    command: ["./node_modules/.bin/tsx", "bot/main.ts"]
+    env_file:
+      - path: ../.env
+        required: false
+      - path: ../bot.env
+        required: false
+    environment:
+      TZ: "${APP_TZ:-Europe/Moscow}"
+      LAN_CALENDAR_API_URL: "http://lan-calendar:3000"
+    volumes:
+      - ../data:/app/data:ro
+    depends_on:
+      - lan-calendar
+
+  yandex-robot:
+    logging: *default-logging
+    build:
+      context: ../robot
+      dockerfile: Dockerfile
+    image: lan-calendar-robot:latest
+    container_name: yandex-robot
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    profiles: ["robot"]
+    shm_size: "1gb"
+    volumes:
+      - robot_profile:/profile
+      - ../data/robot:/robot:ro
+      - ../robot:/app:ro
+
+  llm:
+    logging: *default-logging
+    image: lan-calendar-llm:latest
+    pull_policy: never
+    container_name: lan-calendar-llm
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    profiles: ["ai"]
+    networks:
+      - ai_internal
+    command:
+      - "-m"
+      - "/models/llm/${AI_LLM_FILE:-qwen2.5-3b-instruct-q4_k_m.gguf}"
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8080"
+      - "-c"
+      - "${AI_LLM_CTX:-24576}"
+      - "-np"
+      - "${AI_LLM_SLOTS:-3}"
+      - "-t"
+      - "${AI_THREADS:-4}"
+      - "-tb"
+      - "${AI_THREADS:-4}"
+      - "--cache-reuse"
+      - "256"
+      - "--no-webui"
+    environment:
+      TZ: "${APP_TZ:-Europe/Moscow}"
+    volumes:
+      - ../ai-models:/models:ro
+    mem_limit: ${AI_LLM_MEM:-8g}
+    cpu_shares: 256
+
+  asr:
+    logging: *default-logging
+    build:
+      context: ./asr
+      dockerfile: Dockerfile
+    image: lan-calendar-asr:latest
+    pull_policy: never
+    container_name: lan-calendar-asr
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    profiles: ["ai"]
+    networks:
+      - ai_internal
+    environment:
+      TZ: "${APP_TZ:-Europe/Moscow}"
+      ASR_MODEL_DIR: /models/${AI_ASR_DIR:-whisper-large-v3-turbo}
+      ASR_THREADS: "${AI_THREADS:-4}"
+    volumes:
+      - ../ai-models:/models:ro
+    mem_limit: ${AI_ASR_MEM:-6g}
+    cpu_shares: 256
+
+  caddy:
+    logging: *default-logging
+    build:
+      context: .
+      dockerfile: Dockerfile.caddy
+    image: lan-calendar-caddy:latest
+    container_name: lan-calendar-caddy
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      - lan-calendar
+    env_file:
+      - path: ../.env
+        required: false
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+      - ../.env:/env/.env
+
+networks:
+  default: {}
+  ai_internal:
+    internal: true
+
+volumes:
+  robot_profile:
+  caddy_data:
+  caddy_config:

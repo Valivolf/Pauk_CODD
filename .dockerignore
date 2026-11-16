@@ -1,0 +1,15 @@
+node_modules
+dist
+.git
+.env
+bot.env
+data
+backups
+offline-out
+.playwright-cli
+*.tar
+*.tar.gz
+*.db
+*.db-wal
+*.db-shm
+scripts/*.bat

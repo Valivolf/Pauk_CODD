@@ -1,0 +1,124 @@
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+services:
+  pauk-app:
+    logging: *default-logging
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 8s
+      retries: 3
+      start_period: 45s
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: pauk:latest
+    container_name: pauk-app
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - pauk_net
+      - pauk_ai_internal
+    ports:
+      - "127.0.0.1:${PAUK_APP_PORT:-3010}:3000"
+    env_file:
+      - path: ../.env
+        required: false
+    environment:
+      APP_NAME: "${APP_NAME:-Паук}"
+      PORT: "3000"
+      TZ: "${APP_TZ:-Europe/Moscow}"
+      COOKIE_NAME: "${COOKIE_NAME:-pauk_access_token}"
+      BOT_EMBEDDED: "false"
+      YANDEX_ROBOT_URL: "${YANDEX_ROBOT_URL:-http://pauk-robot:8100}"
+    volumes:
+      - ../data:/app/data
+      - ../backups:/app/backups
+      - type: bind
+        source: ${PHOTOS_HOST_DIR:-/mnt/lan-calendar-photos}
+        target: /app/photos
+        bind:
+          create_host_path: true
+          propagation: rslave
+
+  pauk-bot:
+    logging: *default-logging
+    image: pauk:latest
+    container_name: pauk-bot
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    profiles: ["bot"]
+    command: ["./node_modules/.bin/tsx", "bot/main.ts"]
+    networks:
+      - pauk_net
+    env_file:
+      - path: ../.env
+        required: false
+      - path: ../bot.env
+        required: false
+    environment:
+      TZ: "${APP_TZ:-Europe/Moscow}"
+      LAN_CALENDAR_API_URL: "http://pauk-app:3000"
+    volumes:
+      - ../data:/app/data:ro
+    depends_on:
+      - pauk-app
+
+  pauk-robot:
+    logging: *default-logging
+    build:
+      context: ../robot
+      dockerfile: Dockerfile
+    image: pauk-robot:latest
+    container_name: pauk-robot
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    profiles: ["robot"]
+    networks:
+      - pauk_net
+    shm_size: "1gb"
+    volumes:
+      - pauk_robot_profile:/profile
+      - ../data/robot:/robot:ro
+      - ../robot:/app:ro
+
+  pauk-caddy:
+    logging: *default-logging
+    build:
+      context: .
+      dockerfile: Dockerfile.caddy
+    image: pauk-caddy:latest
+    container_name: pauk-caddy
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      - pauk-app
+    env_file:
+      - path: ../.env
+        required: false
+    environment:
+      PAUK_HTTPS_PORT: "${PAUK_HTTPS_PORT:-8443}"
+      PAUK_APP_PORT: "${PAUK_APP_PORT:-3010}"
+    volumes:
+      - ./Caddyfile.pauk:/etc/caddy/Caddyfile:ro
+      - pauk_caddy_data:/data
+      - pauk_caddy_config:/config
+      - ../.env:/env/.env
+
+networks:
+  pauk_net: {}
+  pauk_ai_internal:
+    internal: true
+
+volumes:
+  pauk_robot_profile:
+  pauk_caddy_data:
+  pauk_caddy_config:

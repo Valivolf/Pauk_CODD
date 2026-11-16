@@ -52,8 +52,10 @@ function readOrCreateSecret(fileName: string, envValue: string | undefined, gene
   return generated;
 }
 
+const rawAppName = (process.env.APP_NAME || '').trim();
+
 export const settings = {
-  appName: process.env.APP_NAME || 'Календарь работ',
+  appName: !rawAppName || rawAppName === 'Календарь работ' ? 'Паук' : rawAppName,
   adminUsername: process.env.ADMIN_USERNAME || 'admin',
   adminPassword: process.env.ADMIN_PASSWORD || 'admin123',
   secretKey: readOrCreateSecret('.secret_key', process.env.SECRET_KEY, () =>
