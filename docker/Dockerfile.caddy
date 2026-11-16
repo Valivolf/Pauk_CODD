@@ -3,5 +3,5 @@ FROM caddy:2-alpine
 # iproute2 нужен caddy-entrypoint.sh для автоопределения LAN IP сервера (`ip addr show`).
 RUN apk add --no-cache iproute2
 COPY caddy-entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+RUN sed -i 's/\r$//' /entrypoint.sh && chmod +x /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]

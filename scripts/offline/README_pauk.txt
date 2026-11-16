@@ -21,11 +21,15 @@
 
 1. СБОРКА АРХИВА НА НОУТБУКЕ (ГДЕ ЕСТЬ ИНТЕРНЕТ И DOCKER)
 ---------------------------------------------------------
-Полный комплект для первой установки (приложение + Caddy + браузер Chromium в одном архиве):
-  bash scripts/offline/make_pauk_bundle.sh full
+На ноутбуке с Windows (в PowerShell или CMD, БЕЗ установки WSL):
+  .\make_pauk_bundle.cmd full
+  (или: powershell -ExecutionPolicy Bypass -File .\scripts\offline\make_pauk_bundle.ps1 full)
 
-Облегчённый пакет для последующих быстрых обновлений кода (без повторной упаковки 500 МБ Chromium):
-  bash scripts/offline/make_pauk_bundle.sh app
+Для быстрых последующих обновлений кода (без повторной упаковки 500 МБ Chromium):
+  .\make_pauk_bundle.cmd app
+
+На Linux / macOS / Git Bash:
+  bash scripts/offline/make_pauk_bundle.sh full
 
 В папке `offline-out/` появится архив `pauk-full-<дата-время>.tar` (или `pauk-app-<дата-время>.tar`).
 

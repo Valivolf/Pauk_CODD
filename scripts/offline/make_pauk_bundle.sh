@@ -62,15 +62,19 @@ build_pauk_bundle() {
   chmod +x "$B/install.sh" "$B/install_pauk.sh" "$B/selftest_pauk.sh" "$B/docker/caddy-entrypoint.sh"
 
   echo "$APP_STAMP" > "$B/BUILD"
-  find server bot static templates -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum > "$B/CODE.sha256"
-  sha256sum server.ts package.json tsconfig.json >> "$B/CODE.sha256"
+  for f in "$B/install.sh" "$B/install_pauk.sh" "$B/selftest_pauk.sh" "$B/.env.example" "$B/README.txt" "$B/BUILD" "$B/robot/VERSION" "$B"/docker/* "$B"/robot/*; do
+    [ -f "$f" ] && tr -d '\r' < "$f" > "$f.lf" && mv "$f.lf" "$f"
+  done
+  chmod +x "$B/install.sh" "$B/install_pauk.sh" "$B/selftest_pauk.sh" "$B/docker/caddy-entrypoint.sh"
+
+  docker run --rm pauk:latest sh -c 'cd /app && find server bot static templates -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum && sha256sum server.ts package.json tsconfig.json' | tr -d '\r' > "$B/CODE.sha256"
 
   (
     cd "$B"
     if [ -f pauk-robot.tar.gz ]; then
-      sha256sum pauk.tar.gz pauk-caddy.tar.gz pauk-robot.tar.gz .env.example docker/* robot/* selftest_pauk.sh install.sh BUILD CODE.sha256 > SHA256SUMS
+      sha256sum pauk.tar.gz pauk-caddy.tar.gz pauk-robot.tar.gz .env.example docker/* robot/* selftest_pauk.sh install.sh BUILD CODE.sha256 | tr -d '\r' > SHA256SUMS
     else
-      sha256sum pauk.tar.gz pauk-caddy.tar.gz .env.example docker/* robot/* selftest_pauk.sh install.sh BUILD CODE.sha256 > SHA256SUMS
+      sha256sum pauk.tar.gz pauk-caddy.tar.gz .env.example docker/* robot/* selftest_pauk.sh install.sh BUILD CODE.sha256 | tr -d '\r' > SHA256SUMS
     fi
   )
 
