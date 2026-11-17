@@ -23,7 +23,15 @@ import {
   type AuthedRequest,
 } from '../auth.ts';
 import { BACKUP_DIR, DB_PATH, settings } from '../config.ts';
-import { getFieldKeyBase64, setFieldKey, tryDecryptWithKey } from '../crypto.ts';
+import {
+  decryptField,
+  getEncryptionFailures,
+  getFieldKeyBase64,
+  getKeyFingerprint,
+  getKeySource,
+  setFieldKey,
+  tryDecryptWithKey,
+} from '../crypto.ts';
 import { closeDb, getDb, initDb, nowIso, reopenDb } from '../db.ts';
 import { ALL, BUILTIN_ROLES, CATALOG, expandPerms, IMPLIES, isSubsetPerms, landingPage } from '../permissions.ts';
 import { getRuntimeFact, getTasksStatus, runIntegrityCheckNow } from '../services/background.ts';
@@ -637,20 +645,62 @@ export function createSystemAndAuthRouter(): Router {
   // ---- ENCRYPTION ----
   function encryptionState() {
     const db = getDb();
-    const totalPeople = (db.prepare('SELECT COUNT(*) as c FROM people').get() as { c: number }).c;
-    const encPeople = (db.prepare("SELECT COUNT(*) as c FROM people WHERE full_name LIKE 'enc:v1:%'").get() as { c: number }).c;
-    const totalPoints = (db.prepare("SELECT COUNT(*) as c FROM points WHERE login != '' OR password != ''").get() as { c: number }).c;
-    const encPoints = (
-      db.prepare("SELECT COUNT(*) as c FROM points WHERE login LIKE 'enc:v1:%' OR password LIKE 'enc:v1:%'").get() as { c: number }
-    ).c;
-    const key = getFieldKeyBase64();
-    const fp = crypto.createHash('sha256').update(key).digest('hex').slice(0, 12).toUpperCase();
+    const specs: Array<[string, string, string]> = [
+      ['people', 'full_name', 'people.full_name'],
+      ['people', 'phone', 'people.phone'],
+      ['points', 'login', 'points.login'],
+      ['points', 'password', 'points.password'],
+    ];
+    const fields: Array<{
+      field: string;
+      encrypted: number;
+      plain: number;
+      unreadable: number;
+      converted: boolean;
+    }> = [];
+    let ok = true;
+    let totalEncrypted = 0;
+    let totalPlain = 0;
+
+    for (const [table, col, field] of specs) {
+      const nEnc = (
+        db.prepare(`SELECT COUNT(*) as c FROM ${table} WHERE ${col} LIKE 'enc:v1:%'`).get() as { c: number }
+      ).c;
+      const nPlain = (
+        db
+          .prepare(
+            `SELECT COUNT(*) as c FROM ${table} WHERE ${col} IS NOT NULL AND ${col} != '' AND ${col} NOT LIKE 'enc:v1:%'`,
+          )
+          .get() as { c: number }
+      ).c;
+      const samples = db
+        .prepare(`SELECT ${col} as val FROM ${table} WHERE ${col} LIKE 'enc:v1:%' LIMIT 200`)
+        .all() as Array<{ val: string }>;
+      let unreadable = 0;
+      for (const s of samples) {
+        if (decryptField(s.val, field) === '') unreadable += 1;
+      }
+      fields.push({
+        field,
+        encrypted: nEnc,
+        plain: nPlain,
+        unreadable,
+        converted: true,
+      });
+      if (nPlain > 0 || unreadable > 0) ok = false;
+      totalEncrypted += nEnc;
+      totalPlain += nPlain;
+    }
+
     return {
-      encrypted: encPeople + encPoints,
-      plain: Math.max(0, totalPeople - encPeople) + Math.max(0, totalPoints - encPoints),
-      key_source: process.env.FIELD_ENCRYPTION_KEY ? 'env' : 'file',
-      fingerprint: fp,
-      key_in_env: Boolean(process.env.FIELD_ENCRYPTION_KEY),
+      ok,
+      failures: getEncryptionFailures(),
+      fields,
+      encrypted: totalEncrypted,
+      plain: totalPlain,
+      key_source: getKeySource(),
+      fingerprint: getKeyFingerprint(),
+      key_in_env: Boolean((process.env.FIELD_ENCRYPTION_KEY || '').trim()),
     };
   }
 
@@ -667,9 +717,7 @@ export function createSystemAndAuthRouter(): Router {
       return;
     }
     recordSecurityEvent('key_view', { username: admin.username, role: admin.role, ip: clientIp(req) });
-    const key = getFieldKeyBase64();
-    const fp = crypto.createHash('sha256').update(key).digest('hex').slice(0, 12).toUpperCase();
-    res.json({ key, fingerprint: fp });
+    res.json({ key: getFieldKeyBase64(), fingerprint: getKeyFingerprint() });
   });
 
   router.post('/api/encryption/key/apply', requirePerm('admin.keys'), (req: AuthedRequest, res) => {
@@ -680,7 +728,7 @@ export function createSystemAndAuthRouter(): Router {
       res.status(403).json({ detail: 'Пароль администратора указан неверно' });
       return;
     }
-    if (process.env.FIELD_ENCRYPTION_KEY) {
+    if ((process.env.FIELD_ENCRYPTION_KEY || '').trim()) {
       res.status(409).json({ detail: 'Ключ задан переменной FIELD_ENCRYPTION_KEY — меняйте его в .env' });
       return;
     }
@@ -689,15 +737,24 @@ export function createSystemAndAuthRouter(): Router {
       res.status(400).json({ detail: 'Некорректный формат ключа' });
       return;
     }
-    const sample = db.prepare("SELECT full_name FROM people WHERE full_name LIKE 'enc:v1:%' LIMIT 1").get() as
-      | { full_name: string }
-      | undefined;
-    if (sample) {
-      try {
-        tryDecryptWithKey(sample.full_name, newKey);
-      } catch {
-        res.status(400).json({ detail: 'Этот ключ не подходит к данным в базе — прежний ключ оставлен.' });
-        return;
+    const specs: Array<[string, string, string]> = [
+      ['people', 'full_name', 'people.full_name'],
+      ['people', 'phone', 'people.phone'],
+      ['points', 'login', 'points.login'],
+      ['points', 'password', 'points.password'],
+    ];
+    for (const [table, col, field] of specs) {
+      const sample = db.prepare(`SELECT ${col} as val FROM ${table} WHERE ${col} LIKE 'enc:v1:%' LIMIT 1`).get() as
+        | { val: string }
+        | undefined;
+      if (sample?.val) {
+        try {
+          tryDecryptWithKey(sample.val, newKey, field);
+          break;
+        } catch {
+          res.status(400).json({ detail: 'Этот ключ не подходит к данным в базе — прежний ключ оставлен.' });
+          return;
+        }
       }
     }
     setFieldKey(newKey);
@@ -734,15 +791,34 @@ export function createSystemAndAuthRouter(): Router {
     }
     try {
       closeDb();
+      try {
+        if (fs.existsSync(`${DB_PATH}-wal`)) fs.unlinkSync(`${DB_PATH}-wal`);
+        if (fs.existsSync(`${DB_PATH}-shm`)) fs.unlinkSync(`${DB_PATH}-shm`);
+      } catch {
+        // ignore
+      }
       fs.writeFileSync(DB_PATH, req.file.buffer);
       reopenDb();
       initDb();
+      const db = getDb();
+      const summary = {
+        points: (db.prepare('SELECT COUNT(*) as c FROM points').get() as { c: number }).c,
+        tasks: (db.prepare('SELECT COUNT(*) as c FROM tasks').get() as { c: number }).c,
+        users: (db.prepare('SELECT COUNT(*) as c FROM users').get() as { c: number }).c,
+      };
+      const enc = encryptionState();
       recordSecurityEvent('backup_restore', {
         username: req.sessionUser!.username,
         role: req.sessionUser!.role,
         ip: clientIp(req),
       });
-      res.json({ ok: true });
+      res.json({
+        ok: true,
+        summary,
+        encryption_warning: !enc.ok
+          ? 'Внимание: часть зашифрованных полей в восстановленной базе не читается текущим ключом шифрования. Откройте «Настройки → Ключ шифрования» и укажите ключ с того сервера, откуда взята копия.'
+          : '',
+      });
     } catch (err) {
       reopenDb();
       res.status(500).json({ detail: `Не удалось восстановить базу: ${(err as Error).message}` });

@@ -24,6 +24,9 @@ st_db_counts_file() {
     const { DatabaseSync } = require("node:sqlite");
     try {
       const db = new DatabaseSync("/db/calendar.db", { readOnly: true });
+      for (const fn of ["lc_dec_pfn", "lc_dec_pph", "lc_dec_plg", "lc_dec_ppw"]) {
+        db.function(fn, { deterministic: true }, (v) => v ?? "");
+      }
       const tables = ["users","people","points","crews","tasks","task_visit_reports","equipment"];
       const out = tables.map((t) => {
         try { return t + "=" + db.prepare("SELECT count(*) c FROM " + t).get().c; }
@@ -39,6 +42,9 @@ st_pauk_counts() {
     const { DatabaseSync } = require("node:sqlite");
     try {
       const db = new DatabaseSync("/app/data/calendar.db", { readOnly: true });
+      for (const fn of ["lc_dec_pfn", "lc_dec_pph", "lc_dec_plg", "lc_dec_ppw"]) {
+        db.function(fn, { deterministic: true }, (v) => v ?? "");
+      }
       const tables = ["users","people","points","crews","tasks","task_visit_reports","equipment"];
       const out = tables.map((t) => {
         try { return t + "=" + db.prepare("SELECT count(*) c FROM " + t).get().c; }
@@ -116,6 +122,9 @@ st_selftest_pauk() {
   db="$(docker exec -i pauk-app node -e '
     const { DatabaseSync } = require("node:sqlite");
     const db = new DatabaseSync("/app/data/calendar.db");
+    for (const fn of ["lc_dec_pfn", "lc_dec_pph", "lc_dec_plg", "lc_dec_ppw"]) {
+      db.function(fn, { deterministic: true }, (v) => v ?? "");
+    }
     const ok = db.prepare("PRAGMA integrity_check").get().integrity_check === "ok";
     console.log(ok ? "OK" : "BAD");
   ' 2>&1 || true)"

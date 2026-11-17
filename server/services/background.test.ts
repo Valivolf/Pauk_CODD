@@ -11,7 +11,8 @@ process.env.BACKUP_DIR = path.join(tmpRoot, 'backups');
 process.env.PHOTOS_DIR = path.join(tmpRoot, 'photos');
 process.env.SECURITY_LOG_RETENTION_DAYS = '30';
 
-const { initDb, getDb } = await import('../db.ts');
+const { initDb, getDb, migrateCoddSpiderGeneratedColumns } = await import('../db.ts');
+const { decryptField, encryptField } = await import('../crypto.ts');
 const {
   runDailyBackupAndSnapshots,
   runIntegrityCheckNow,
@@ -63,6 +64,38 @@ describe('background maintenance services', () => {
     const files = fs.readdirSync(process.env.BACKUP_DIR!);
     assert.ok(files.some((f) => /^calendar-\d{4}-\d{2}-\d{2}\.db$/.test(f)));
     assert.ok(files.some((f) => f === 'recent-0.db'));
+  });
+
+  it('migrates CODD_SPIDER virtual generated columns (lc_dec_pph / lc_dec_pfn) and decrypts AESGCM with AAD', () => {
+    initDb();
+    const db = getDb();
+
+    // Simulate CODD_SPIDER schema with *_enc and VIRTUAL GENERATED ALWAYS AS (lc_dec_*(...))
+    db.exec('DROP TABLE IF EXISTS people_codd_test');
+    db.exec('ALTER TABLE people RENAME COLUMN full_name TO full_name_enc');
+    db.exec('ALTER TABLE people RENAME COLUMN phone TO phone_enc');
+    db.exec('ALTER TABLE people ADD COLUMN full_name TEXT GENERATED ALWAYS AS (lc_dec_pfn(full_name_enc)) VIRTUAL');
+    db.exec('ALTER TABLE people ADD COLUMN phone TEXT GENERATED ALWAYS AS (lc_dec_pph(phone_enc)) VIRTUAL');
+
+    const encName = encryptField('Иванов Иван Иванович', 'people.full_name');
+    const encPhone = encryptField('+7 999 123-45-67', 'people.phone');
+    db.prepare(
+      "INSERT INTO people (full_name_enc, phone_enc, role_type, active, created_at) VALUES (?, ?, 'fitter', 1, ?)",
+    ).run(encName, encPhone, new Date().toISOString());
+
+    // Verify PRAGMA integrity_check works even while virtual generated columns exist
+    const rowBefore = db.prepare('PRAGMA integrity_check').get() as { integrity_check: string };
+    assert.equal(rowBefore.integrity_check, 'ok');
+
+    // Run migration to drop virtual columns and rename *_enc -> standard columns
+    migrateCoddSpiderGeneratedColumns(db);
+
+    const person = db
+      .prepare('SELECT full_name, phone FROM people WHERE full_name = ?')
+      .get(encName) as { full_name: string; phone: string } | undefined;
+    assert.ok(person);
+    assert.equal(decryptField(person.full_name), 'Иванов Иван Иванович');
+    assert.equal(decryptField(person.phone), '+7 999 123-45-67');
   });
 
   it('syncs unrepaired APK group automatically when report is failed vs fixed', () => {

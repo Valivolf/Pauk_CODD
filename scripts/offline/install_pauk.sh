@@ -140,11 +140,24 @@ if { [ ! -f "$TARGET/data/calendar.db" ] || [ -n "$FORCE_COPY_DB" ]; } && [ -f "
   [ -f "$SOURCE_OLD/data/calendar.db-wal" ] && cp -f "$SOURCE_OLD/data/calendar.db-wal" "$TARGET/data/calendar.db-wal" || rm -f "$TARGET/data/calendar.db-wal"
   [ -f "$SOURCE_OLD/data/calendar.db-shm" ] && cp -f "$SOURCE_OLD/data/calendar.db-shm" "$TARGET/data/calendar.db-shm" || rm -f "$TARGET/data/calendar.db-shm"
 
-  # Сразу фиксируем WAL-журнал в скопированной базе через контейнер pauk:latest
+  # Сразу фиксируем WAL-журнал и адаптируем вычисляемые столбцы старой версии (lc_dec_*) в скопированной базе
   docker run --rm -v "$TARGET/data:/data" pauk:latest node -e '
     const { DatabaseSync } = require("node:sqlite");
     const db = new DatabaseSync("/data/calendar.db");
+    for (const fn of ["lc_dec_pfn", "lc_dec_pph", "lc_dec_plg", "lc_dec_ppw"]) {
+      db.function(fn, { deterministic: true }, (v) => v ?? "");
+    }
     db.exec("PRAGMA wal_checkpoint(TRUNCATE);");
+    for (const [table, col] of [["people", "full_name"], ["people", "phone"], ["points", "login"], ["points", "password"]]) {
+      const exists = db.prepare("SELECT 1 FROM sqlite_master WHERE type = \x27table\x27 AND name = ?").get(table);
+      if (!exists) continue;
+      const xinfo = db.prepare("PRAGMA table_xinfo(" + table + ")").all();
+      const names = new Set(xinfo.map((r) => r.name));
+      if (names.has(col + "_enc")) {
+        if (names.has(col)) db.exec("ALTER TABLE " + table + " DROP COLUMN " + col);
+        db.exec("ALTER TABLE " + table + " RENAME COLUMN " + col + "_enc TO " + col);
+      }
+    }
     db.close();
   ' >/dev/null 2>&1 || true
 

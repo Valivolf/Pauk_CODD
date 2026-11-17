@@ -1,6 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import bcrypt from 'bcryptjs';
 import { DB_PATH, settings } from './config.ts';
+import { encryptField, registerSqliteCryptoFunctions } from './crypto.ts';
 import { BUILTIN_ROLES, expandPerms } from './permissions.ts';
 
 let dbInstance: DatabaseSync | null = null;
@@ -8,6 +9,7 @@ let dbInstance: DatabaseSync | null = null;
 export function getDb(): DatabaseSync {
   if (!dbInstance) {
     dbInstance = new DatabaseSync(DB_PATH);
+    registerSqliteCryptoFunctions(dbInstance);
     dbInstance.exec('PRAGMA journal_mode = WAL;');
     dbInstance.exec('PRAGMA foreign_keys = ON;');
     dbInstance.exec('PRAGMA busy_timeout = 10000;');
@@ -45,8 +47,54 @@ export function getStateRev(): number {
   return row?.rev ?? 0;
 }
 
+export function migrateCoddSpiderGeneratedColumns(db: DatabaseSync): void {
+  registerSqliteCryptoFunctions(db);
+  const pairs: Array<[string, string, string]> = [
+    ['people', 'full_name', 'people.full_name'],
+    ['people', 'phone', 'people.phone'],
+    ['points', 'login', 'points.login'],
+    ['points', 'password', 'points.password'],
+  ];
+  for (const [table, col, field] of pairs) {
+    const exists = db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
+      .get(table);
+    if (!exists) continue;
+    const xinfo = db.prepare(`PRAGMA table_xinfo(${table})`).all() as Array<{
+      name: string;
+      hidden: number;
+    }>;
+    const byName = new Map(xinfo.map((r) => [r.name, r]));
+    const encCol = `${col}_enc`;
+    if (byName.has(encCol)) {
+      if (byName.has(col)) {
+        db.exec(`ALTER TABLE ${table} DROP COLUMN ${col}`);
+      }
+      db.exec(`ALTER TABLE ${table} RENAME COLUMN ${encCol} TO ${col}`);
+    }
+    const afterInfo = db.prepare(`PRAGMA table_xinfo(${table})`).all() as Array<{
+      name: string;
+      hidden: number;
+    }>;
+    if (afterInfo.some((r) => r.name === col && r.hidden === 0)) {
+      const plainRows = db
+        .prepare(
+          `SELECT rowid as rid, ${col} as val FROM ${table} WHERE ${col} IS NOT NULL AND ${col} != '' AND ${col} NOT LIKE 'enc:v1:%'`,
+        )
+        .all() as Array<{ rid: number; val: string }>;
+      if (plainRows.length > 0) {
+        const upd = db.prepare(`UPDATE ${table} SET ${col} = ? WHERE rowid = ?`);
+        for (const r of plainRows) {
+          upd.run(encryptField(String(r.val), field), r.rid);
+        }
+      }
+    }
+  }
+}
+
 export function initDb(): void {
   const db = getDb();
+  migrateCoddSpiderGeneratedColumns(db);
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS app_flags (
