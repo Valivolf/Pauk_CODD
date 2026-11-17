@@ -1,9 +1,15 @@
 {
 	default_sni {$SERVER_ADDRESS:localhost}
+	on_demand_tls {
+		interval 1m
+		burst 10
+	}
 }
 
-{$SERVER_ADDRESS:localhost}, localhost, 127.0.0.1 {
-	tls internal
+{$SERVER_ADDRESS:localhost}, {$SERVER_DOMAIN:pauk.local}, localhost, 127.0.0.1, :443 {
+	tls internal {
+		on_demand
+	}
 
 	# Корневой сертификат этого Caddy — публичная часть (root.crt).
 	handle /ca.crt {

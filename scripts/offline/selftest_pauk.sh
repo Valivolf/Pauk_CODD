@@ -20,7 +20,7 @@ st_container_running() {
 st_db_counts_file() {
   local db_host_path="$1"
   [ -f "$db_host_path" ] || return 0
-  docker run --rm -v "$db_host_path:/db/calendar.db:ro" pauk:latest node -e '
+  docker run --rm -v "$db_host_path:/db/calendar.db:ro" pauk:latest node --no-warnings -e '
     const { DatabaseSync } = require("node:sqlite");
     try {
       const db = new DatabaseSync("/db/calendar.db", { readOnly: true });
@@ -38,7 +38,7 @@ st_db_counts_file() {
 }
 
 st_pauk_counts() {
-  docker exec -i pauk-app node -e '
+  docker exec -i pauk-app node --no-warnings -e '
     const { DatabaseSync } = require("node:sqlite");
     try {
       const db = new DatabaseSync("/app/data/calendar.db", { readOnly: true });
@@ -119,7 +119,7 @@ st_selftest_pauk() {
   fi
 
   local db
-  db="$(docker exec -i pauk-app node -e '
+  db="$(docker exec -i pauk-app node --no-warnings -e '
     const { DatabaseSync } = require("node:sqlite");
     const db = new DatabaseSync("/app/data/calendar.db");
     for (const fn of ["lc_dec_pfn", "lc_dec_pph", "lc_dec_plg", "lc_dec_ppw"]) {
@@ -127,12 +127,11 @@ st_selftest_pauk() {
     }
     const ok = db.prepare("PRAGMA integrity_check").get().integrity_check === "ok";
     console.log(ok ? "OK" : "BAD");
-  ' 2>&1 || true)"
-  if [ "$db" = "OK" ]; then
-    st_ok "база данных «Паук» цела (integrity_check=ok)"
-  else
-    st_bad "проблема с базой данных «Паук»: $db" "проверьте $project/data/calendar.db"
-  fi
+  ' 2>/dev/null || true)"
+  case "$db" in
+    OK*) st_ok "база данных «Паук» цела (integrity_check=ok)" ;;
+    *) st_bad "проблема с базой данных «Паук»: ${db:-не удалось проверить}" "проверьте $project/data/calendar.db" ;;
+  esac
 
   if [ -n "$baseline_counts" ]; then
     local after t b a lost=""
@@ -153,7 +152,7 @@ st_selftest_pauk() {
 
   if st_container_running pauk-robot; then
     local rob
-    rob="$(docker exec -i pauk-app node -e '
+    rob="$(docker exec -i pauk-app node --no-warnings -e '
       const fs = require("fs");
       const url = (process.env.YANDEX_ROBOT_URL || "http://pauk-robot:8100").replace(/\/+$/, "");
       let key = (process.env.YANDEX_ROBOT_API_KEY || "").trim();
@@ -165,7 +164,7 @@ st_selftest_pauk() {
           console.log(r.ok ? "STATUS_OK" : "STATUS_BAD " + r.status);
         } catch (e) { console.log("STATUS_ERR " + e.message); }
       })();
-    ' 2>&1 || true)"
+    ' 2>/dev/null || true)"
     case "$rob" in
       *STATUS_OK*) st_ok "браузерный робот pauk-robot (Chromium) запущен и доступен из «Паук»" ;;
       *) st_warn "pauk-robot запущен, но ещё инициализируется ($rob)" "sudo docker logs --tail 40 pauk-robot" ;;

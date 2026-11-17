@@ -149,19 +149,24 @@ export function createPointsRouter(): Router {
       rows = rows.filter((r) => r.category_id && set.has(Number(r.category_id)));
     }
     if (statuses.length) {
-      const set = new Set(statuses);
+      const set = new Set(statuses.map((s) => (s === '__none__' ? '' : s)));
       rows = rows.filter((r) => set.has(String(r.status || '')));
     }
+    const today = new Date().toISOString().slice(0, 10);
     if (certificate === 'expired') {
-      const today = new Date().toISOString().slice(0, 10);
       rows = rows.filter((r) => r.verification_valid_until && String(r.verification_valid_until) < today);
     } else if (certificate === 'valid') {
-      const today = new Date().toISOString().slice(0, 10);
       rows = rows.filter((r) => r.verification_valid_until && String(r.verification_valid_until) >= today);
+    } else if (certificate === 'missing') {
+      rows = rows.filter((r) => !String(r.verification_valid_until || '').trim());
+    } else if (certificate === 'invalid') {
+      rows = rows.filter((r) => !String(r.verification_valid_until || '').trim() || String(r.verification_valid_until) < today);
     }
 
-    if (sort === 'down_oldest') {
+    if (sort === 'down_oldest' || sort === 'down_duration') {
       rows.sort((a, b) => String(a.port_down_since || '9999').localeCompare(String(b.port_down_since || '9999')));
+    } else if (sort === 'recent_down') {
+      rows.sort((a, b) => String(b.port_down_since || '').localeCompare(String(a.port_down_since || '')));
     } else {
       rows.sort((a, b) => String(a.id).localeCompare(String(b.id), 'ru'));
     }
@@ -504,16 +509,25 @@ export function createPointsRouter(): Router {
   });
 
   // ---- POINT CATEGORIES ----
-  router.get('/api/point-categories', (_req, res) => {
+  function queryPointCategories(): Array<Record<string, unknown>> {
     const rows = getDb()
-      .prepare('SELECT id, name, color, match_pattern, is_legacy FROM point_categories ORDER BY name')
+      .prepare(
+        `SELECT pc.id, pc.name, pc.color, pc.match_pattern, pc.is_legacy,
+                (SELECT COUNT(*) FROM points p WHERE p.category_id = pc.id) AS point_count
+         FROM point_categories pc
+         ORDER BY pc.name`,
+      )
       .all() as Array<Record<string, unknown>>;
-    res.json(rows.map((r) => ({ ...r, is_legacy: Boolean(r.is_legacy) })));
+    return rows.map((r) => ({ ...r, is_legacy: Boolean(r.is_legacy), point_count: Number(r.point_count || 0) }));
+  }
+
+  router.get('/api/point-categories', (_req, res) => {
+    res.json(queryPointCategories());
   });
 
   router.get('/api/point-categories/search', (req, res) => {
     const q = String(req.query.q || '').trim().toLowerCase();
-    const rows = getDb().prepare('SELECT id, name, color, match_pattern, is_legacy FROM point_categories ORDER BY name').all() as Array<Record<string, unknown>>;
+    const rows = queryPointCategories();
     res.json(rows.filter((r) => !q || String(r.name).toLowerCase().includes(q)));
   });
 
@@ -529,8 +543,9 @@ export function createPointsRouter(): Router {
       const info = db
         .prepare('INSERT INTO point_categories (name, color, match_pattern, is_legacy) VALUES (?, ?, ?, ?)')
         .run(name, String(b.color || '#6366f1'), b.match_pattern || null, b.is_legacy ? 1 : 0);
-      const created = db.prepare('SELECT * FROM point_categories WHERE id = ?').get(Number(info.lastInsertRowid)) as Record<string, unknown>;
-      res.status(201).json({ ...created, is_legacy: Boolean(created.is_legacy) });
+      const id = Number(info.lastInsertRowid);
+      const created = queryPointCategories().find((c) => Number(c.id) === id);
+      res.status(201).json(created || { id, name, color: String(b.color || '#6366f1'), match_pattern: b.match_pattern || null, is_legacy: Boolean(b.is_legacy), point_count: 0 });
     } catch {
       res.status(400).json({ detail: 'Такая категория уже существует' });
     }
@@ -547,12 +562,12 @@ export function createPointsRouter(): Router {
       b.is_legacy ? 1 : 0,
       id,
     );
-    const updated = db.prepare('SELECT * FROM point_categories WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    const updated = queryPointCategories().find((c) => Number(c.id) === id);
     if (!updated) {
       res.status(404).json({ detail: 'Категория не найдена' });
       return;
     }
-    res.json({ ...updated, is_legacy: Boolean(updated.is_legacy) });
+    res.json(updated);
   });
 
   router.delete('/api/point-categories/:categoryId', (req, res) => {
@@ -966,21 +981,44 @@ export function createPointsRouter(): Router {
   });
 
   // ---- APK GROUPS ----
-  router.get('/api/apk-groups', (_req, res) => {
-    syncUnrepairedGroup(false);
+  function hydrateApkGroups(): Array<Record<string, unknown>> {
     const db = getDb();
     const groups = db.prepare('SELECT * FROM apk_groups ORDER BY id').all() as Array<Record<string, unknown>>;
     const counts = db
       .prepare('SELECT group_id, COUNT(*) as cnt FROM apk_group_points GROUP BY group_id')
       .all() as Array<{ group_id: number; cnt: number }>;
-    const countMap = new Map(counts.map((c) => [c.group_id, c.cnt]));
-    res.json(
-      groups.map((g) => ({
+    const countMap = new Map(counts.map((c) => [Number(c.group_id), Number(c.cnt)]));
+    const typeRows = db
+      .prepare("SELECT group_id, coalesce(work_type, '') as work_type, COUNT(*) as cnt FROM apk_group_points GROUP BY group_id, coalesce(work_type, '')")
+      .all() as Array<{ group_id: number; work_type: string; cnt: number }>;
+    const typesMap = new Map<number, Record<string, number>>();
+    for (const tr of typeRows) {
+      const gid = Number(tr.group_id);
+      const cur = typesMap.get(gid) || {};
+      cur[tr.work_type || ''] = Number(tr.cnt);
+      typesMap.set(gid, cur);
+    }
+    return groups.map((g) => {
+      const gid = Number(g.id);
+      const cnt = countMap.get(gid) || 0;
+      return {
         ...g,
         auto_remove: Boolean(g.auto_remove),
-        points_count: countMap.get(Number(g.id)) || 0,
-      })),
-    );
+        count: cnt,
+        points_count: cnt,
+        types: typesMap.get(gid) || {},
+      };
+    });
+  }
+
+  function apkGroupCount(groupId: number): number {
+    const row = getDb().prepare('SELECT COUNT(*) as c FROM apk_group_points WHERE group_id = ?').get(groupId) as { c: number } | undefined;
+    return Number(row?.c || 0);
+  }
+
+  router.get('/api/apk-groups', (_req, res) => {
+    syncUnrepairedGroup(false);
+    res.json(hydrateApkGroups());
   });
 
   router.post('/api/apk-groups', (req: AuthedRequest, res) => {
@@ -992,8 +1030,9 @@ export function createPointsRouter(): Router {
     const info = getDb()
       .prepare('INSERT INTO apk_groups (name, description, kind, auto_remove, created_at, created_by) VALUES (?, ?, \'\', ?, ?, ?)')
       .run(name, String(req.body?.description || ''), req.body?.auto_remove ? 1 : 0, nowIso(), req.sessionUser?.username || '');
-    const created = getDb().prepare('SELECT * FROM apk_groups WHERE id = ?').get(Number(info.lastInsertRowid)) as Record<string, unknown>;
-    res.status(201).json({ ...created, auto_remove: Boolean(created.auto_remove), points_count: 0 });
+    const id = Number(info.lastInsertRowid);
+    const created = hydrateApkGroups().find((g) => Number(g.id) === id);
+    res.status(201).json(created || { id, name, description: String(req.body?.description || ''), kind: '', auto_remove: Boolean(req.body?.auto_remove), count: 0, points_count: 0, types: {} });
   });
 
   router.put('/api/apk-groups/:groupId', (req, res) => {
@@ -1004,18 +1043,36 @@ export function createPointsRouter(): Router {
       res.status(404).json({ detail: 'Подгруппа не найдена' });
       return;
     }
+    const nextAutoRemove = req.body?.auto_remove !== undefined ? (req.body.auto_remove ? 1 : 0) : Number(existing.auto_remove ?? 0);
     db.prepare('UPDATE apk_groups SET name=?, description=?, auto_remove=? WHERE id=?').run(
       String(req.body?.name ?? existing.name ?? '').trim(),
       String(req.body?.description ?? existing.description ?? ''),
-      req.body?.auto_remove !== undefined ? (req.body.auto_remove ? 1 : 0) : Number(existing.auto_remove ?? 0),
+      nextAutoRemove,
       id,
     );
-    const updated = db.prepare('SELECT * FROM apk_groups WHERE id = ?').get(id) as Record<string, unknown>;
-    res.json({ ...updated, auto_remove: Boolean(updated.auto_remove) });
+    let removedVisited = 0;
+    if (nextAutoRemove && !existing.auto_remove) {
+      const delInfo = db
+        .prepare(
+          `DELETE FROM apk_group_points
+           WHERE group_id = ?
+             AND EXISTS (
+               SELECT 1 FROM task_visit_reports r
+               WHERE r.point_id = apk_group_points.point_id
+                 AND r.created_at >= apk_group_points.added_at
+             )`,
+        )
+        .run(id);
+      removedVisited = Number(delInfo.changes || 0);
+    }
+    const updated = hydrateApkGroups().find((g) => Number(g.id) === id);
+    res.json({ ...(updated || existing), auto_remove: Boolean(nextAutoRemove), removed_visited: removedVisited });
   });
 
   router.delete('/api/apk-groups/:groupId', (req, res) => {
-    getDb().prepare('DELETE FROM apk_groups WHERE id = ?').run(Number(req.params.groupId));
+    const gid = Number(req.params.groupId);
+    getDb().prepare('DELETE FROM apk_group_points WHERE group_id = ?').run(gid);
+    getDb().prepare('DELETE FROM apk_groups WHERE id = ?').run(gid);
     res.json({ ok: true });
   });
 
@@ -1026,10 +1083,14 @@ export function createPointsRouter(): Router {
       'INSERT OR IGNORE INTO apk_group_points (group_id, point_id, note, need, work_type, added_at) VALUES (?, ?, ?, ?, ?, ?)',
     );
     const now = nowIso();
+    let added = 0;
+    let already = 0;
     for (const pid of ids) {
-      ins.run(groupId, pid, String(req.body?.note || ''), String(req.body?.need || ''), String(req.body?.work_type || ''), now);
+      const info = ins.run(groupId, pid, String(req.body?.note || ''), String(req.body?.need || ''), String(req.body?.work_type || ''), now);
+      if (info.changes) added += 1;
+      else already += 1;
     }
-    res.json({ ok: true, added: ids.length });
+    res.json({ ok: true, added, already, total: apkGroupCount(groupId) });
   });
 
   router.post('/api/apk-groups/:groupId/paste', (req, res) => {
@@ -1040,21 +1101,23 @@ export function createPointsRouter(): Router {
     const allPts = db.prepare('SELECT id FROM points').all() as Array<{ id: string }>;
     const byLow = new Map(allPts.map((p) => [p.id.toLowerCase(), p.id]));
     const ins = db.prepare(
-      'INSERT OR IGNORE INTO apk_group_points (group_id, point_id, note, need, work_type, added_at) VALUES (?, ?, \'\', \'\', \'\', ?)',
+      'INSERT OR IGNORE INTO apk_group_points (group_id, point_id, note, need, work_type, added_at) VALUES (?, ?, ?, ?, ?, ?)',
     );
     const now = nowIso();
     let added = 0;
+    let already = 0;
     const unknown: string[] = [];
     for (const tok of tokens) {
       const real = byLow.get(tok.toLowerCase());
       if (real) {
-        ins.run(groupId, real, now);
-        added += 1;
+        const info = ins.run(groupId, real, String(req.body?.note || ''), String(req.body?.need || ''), String(req.body?.work_type || ''), now);
+        if (info.changes) added += 1;
+        else already += 1;
       } else {
         unknown.push(tok);
       }
     }
-    res.json({ ok: true, added, unknown });
+    res.json({ ok: true, added, already, total: apkGroupCount(groupId), unknown });
   });
 
   router.post('/api/apk-groups/:groupId/import', upload.single('file'), async (req, res) => {
@@ -1069,18 +1132,23 @@ export function createPointsRouter(): Router {
     const allPts = db.prepare('SELECT id FROM points').all() as Array<{ id: string }>;
     const byLow = new Map(allPts.map((p) => [p.id.toLowerCase(), p.id]));
     const ins = db.prepare(
-      'INSERT OR IGNORE INTO apk_group_points (group_id, point_id, note, need, work_type, added_at) VALUES (?, ?, \'\', \'\', \'\', ?)',
+      'INSERT OR IGNORE INTO apk_group_points (group_id, point_id, note, need, work_type, added_at) VALUES (?, ?, ?, ?, ?, ?)',
     );
     let added = 0;
+    let already = 0;
+    const unknown: string[] = [];
     const now = nowIso();
     for (const tok of tokens) {
       const real = byLow.get(tok.toLowerCase());
       if (real) {
-        ins.run(groupId, real, now);
-        added += 1;
+        const info = ins.run(groupId, real, String(req.body?.note || ''), String(req.body?.need || ''), String(req.body?.work_type || ''), now);
+        if (info.changes) added += 1;
+        else already += 1;
+      } else {
+        unknown.push(tok);
       }
     }
-    res.json({ ok: true, added });
+    res.json({ ok: true, added, already, total: apkGroupCount(groupId), unknown });
   });
 
   router.post('/api/apk-groups/:groupId/points/update', (req, res) => {
@@ -1088,10 +1156,14 @@ export function createPointsRouter(): Router {
     const ids: string[] = Array.isArray(req.body?.point_ids) ? req.body.point_ids.map(String) : [];
     const db = getDb();
     for (const pid of ids) {
+      const existing = db.prepare('SELECT note, need, work_type FROM apk_group_points WHERE group_id=? AND point_id=?').get(groupId, pid) as
+        | { note: string; need: string; work_type: string }
+        | undefined;
+      if (!existing) continue;
       db.prepare('UPDATE apk_group_points SET note=?, need=?, work_type=? WHERE group_id=? AND point_id=?').run(
-        String(req.body?.note || ''),
-        String(req.body?.need || ''),
-        String(req.body?.work_type || ''),
+        req.body?.note !== undefined ? String(req.body.note || '') : existing.note,
+        req.body?.need !== undefined ? String(req.body.need || '') : existing.need,
+        req.body?.work_type !== undefined ? String(req.body.work_type || '') : existing.work_type,
         groupId,
         pid,
       );
@@ -1102,9 +1174,21 @@ export function createPointsRouter(): Router {
   router.put('/api/apk-groups/:groupId/points/:pointId', (req, res) => {
     const groupId = Number(req.params.groupId);
     const pointId = decodeURIComponent(req.params.pointId);
-    getDb()
-      .prepare('UPDATE apk_group_points SET note=?, need=?, work_type=? WHERE group_id=? AND point_id=?')
-      .run(String(req.body?.note || ''), String(req.body?.need || ''), String(req.body?.work_type || ''), groupId, pointId);
+    const db = getDb();
+    const existing = db.prepare('SELECT note, need, work_type FROM apk_group_points WHERE group_id=? AND point_id=?').get(groupId, pointId) as
+      | { note: string; need: string; work_type: string }
+      | undefined;
+    if (!existing) {
+      res.status(404).json({ detail: 'Комплекс не найден в подгруппе' });
+      return;
+    }
+    db.prepare('UPDATE apk_group_points SET note=?, need=?, work_type=? WHERE group_id=? AND point_id=?').run(
+      req.body?.note !== undefined ? String(req.body.note || '') : existing.note,
+      req.body?.need !== undefined ? String(req.body.need || '') : existing.need,
+      req.body?.work_type !== undefined ? String(req.body.work_type || '') : existing.work_type,
+      groupId,
+      pointId,
+    );
     res.json({ ok: true });
   });
 

@@ -142,4 +142,87 @@ describe('background maintenance services', () => {
     assert.equal(oldRow, undefined);
     assert.ok(freshRow);
   });
+
+  it('returns CODD_SPIDER-compatible response shapes for APK and warehouse APIs', async () => {
+    initDb();
+    const db = getDb();
+    const express = (await import('express')).default;
+    const cookieParser = (await import('cookie-parser')).default;
+    const { createPointsRouter } = await import('../routes/points.ts');
+    const { createEquipmentRouter } = await import('../routes/equipment.ts');
+    const { createAccessToken, permissionGuard } = await import('../auth.ts');
+    const { settings } = await import('../config.ts');
+
+    // Ensure an admin user exists for auth cookie
+    const now = new Date().toISOString();
+    db.prepare(
+      "INSERT OR IGNORE INTO users (username, password_hash, role, created_at) VALUES ('test_admin', 'x', 'admin', ?)",
+    ).run(now);
+    const admin = db
+      .prepare("SELECT id, username, role, token_version FROM users WHERE username = 'test_admin'")
+      .get() as { id: number; username: string; role: string; token_version: number };
+    const token = createAccessToken(admin);
+
+    const app = express();
+    app.use(express.json());
+    app.use(cookieParser());
+    app.use(permissionGuard);
+    app.use(createPointsRouter());
+    app.use(createEquipmentRouter());
+
+    const srv = await new Promise<import('node:http').Server>((resolve) => {
+      const s = app.listen(0, '127.0.0.1', () => resolve(s));
+    });
+    const port = (srv.address() as net.AddressInfo).port;
+    const base = `http://127.0.0.1:${port}`;
+    const headers = { Cookie: `${settings.cookieName}=${token}` };
+
+    try {
+      // 1. /api/point-categories -> must include numeric point_count
+      const catRes = await fetch(`${base}/api/point-categories`, { headers });
+      assert.equal(catRes.status, 200);
+      const cats = (await catRes.json()) as Array<{ id: number; name: string; point_count?: number }>;
+      assert.ok(Array.isArray(cats));
+      assert.ok(cats.length > 0);
+      for (const c of cats) {
+        assert.equal(typeof c.point_count, 'number');
+      }
+
+      // 2. /api/apk-groups -> must include numeric count and types map
+      const grpRes = await fetch(`${base}/api/apk-groups`, { headers });
+      assert.equal(grpRes.status, 200);
+      const grps = (await grpRes.json()) as Array<{ id: number; name: string; count?: number; types?: Record<string, number> }>;
+      assert.ok(Array.isArray(grps));
+      assert.ok(grps.length > 0);
+      for (const g of grps) {
+        assert.equal(typeof g.count, 'number');
+        assert.equal(typeof g.types, 'object');
+      }
+
+      // 3. /api/equipment/items -> must return Array (for list.filter) + X-Total-Count header
+      const eqRes = await fetch(`${base}/api/equipment/items?limit=10&offset=0`, { headers });
+      assert.equal(eqRes.status, 200);
+      assert.ok(eqRes.headers.get('x-total-count') !== null);
+      const eqList = await eqRes.json();
+      assert.ok(Array.isArray(eqList));
+
+      // 4. /api/equipment/history -> must include items (Array) and action_types (Array)
+      const histRes = await fetch(`${base}/api/equipment/history?limit=10`, { headers });
+      assert.equal(histRes.status, 200);
+      const hist = (await histRes.json()) as { items: unknown[]; action_types: unknown[]; total: number };
+      assert.ok(Array.isArray(hist.items));
+      assert.ok(Array.isArray(hist.action_types));
+
+      // 5. /api/equipment/reports/summary -> must include columns, rows (Array), totals
+      const sumRes = await fetch(`${base}/api/equipment/reports/summary`, { headers });
+      assert.equal(sumRes.status, 200);
+      const summary = (await sumRes.json()) as { columns: unknown[]; rows: unknown[]; totals: Record<string, number> };
+      assert.ok(Array.isArray(summary.columns));
+      assert.ok(Array.isArray(summary.rows));
+      assert.equal(typeof summary.totals, 'object');
+    } finally {
+      await new Promise<void>((resolve) => srv.close(() => resolve()));
+    }
+  });
 });
+

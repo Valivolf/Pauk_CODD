@@ -141,7 +141,7 @@ if { [ ! -f "$TARGET/data/calendar.db" ] || [ -n "$FORCE_COPY_DB" ]; } && [ -f "
   [ -f "$SOURCE_OLD/data/calendar.db-shm" ] && cp -f "$SOURCE_OLD/data/calendar.db-shm" "$TARGET/data/calendar.db-shm" || rm -f "$TARGET/data/calendar.db-shm"
 
   # Сразу фиксируем WAL-журнал и адаптируем вычисляемые столбцы старой версии (lc_dec_*) в скопированной базе
-  docker run --rm -v "$TARGET/data:/data" pauk:latest node -e '
+  docker run --rm -v "$TARGET/data:/data" pauk:latest node --no-warnings -e '
     const { DatabaseSync } = require("node:sqlite");
     const db = new DatabaseSync("/data/calendar.db");
     for (const fn of ["lc_dec_pfn", "lc_dec_pph", "lc_dec_plg", "lc_dec_ppw"]) {
@@ -243,7 +243,7 @@ if [ -n "$WITH_BOT" ]; then
   PROFILES+=(--profile bot)
 fi
 
-docker compose -p pauk -f docker-compose.pauk.yml "${PROFILES[@]}" up -d --no-build
+docker compose -p pauk -f docker-compose.pauk.yml "${PROFILES[@]}" up -d --no-build --force-recreate
 
 echo "      жду готовности «Паук» (до 60 с)…"
 for _ in $(seq 1 30); do

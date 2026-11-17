@@ -1178,7 +1178,7 @@ async function apkYandexExport() {
 function apkCategoryChipsHtml() {
   const categoryOptions = [
     { value: '__none__', label: 'Без категории' },
-    ...APK_CATEGORIES.map((c) => ({ value: String(c.id), label: `${c.name} (${c.point_count})` })),
+    ...APK_CATEGORIES.map((c) => ({ value: String(c.id), label: `${c.name} (${c.point_count ?? c.count ?? 0})` })),
   ];
   return filterChipsHtml('apk-category', categoryOptions, apkFilters.categories);
 }

@@ -33,26 +33,27 @@ function apkGroupsBarHtml() {
   const chip = (active, inner, attrs) => `<button type="button" ${attrs} class="rounded-full px-3 py-1 text-xs border transition-colors ${active ? 'border-indigo-400 bg-indigo-500/25 font-semibold' : 'border-slate-700 bg-slate-800/60 hover:bg-slate-700/60'}">${inner}</button>`;
   return `<span class="text-xs text-slate-400">Подгруппы:</span>
     ${chip(apkFilters.groupId == null, 'Все АПК', 'data-apkgroup=""')}
-    ${APK_GROUPS.map((g) => chip(apkFilters.groupId === g.id, `${g.kind ? '⚠' : '📁'} ${esc(g.name)} <span class="text-slate-400">· ${g.count}</span>${g.auto_remove ? ' <span title="Комплексы уходят из подгруппы после выезда">⏱</span>' : ''}`, `data-apkgroup="${g.id}"`)).join('')}
+    ${APK_GROUPS.map((g) => chip(apkFilters.groupId === g.id, `${g.kind ? '⚠' : '📁'} ${esc(g.name)} <span class="text-slate-400">· ${g.count ?? g.points_count ?? 0}</span>${g.auto_remove ? ' <span title="Комплексы уходят из подгруппы после выезда">⏱</span>' : ''}`, `data-apkgroup="${g.id}"`)).join('')}
     ${apkCanEdit() ? chip(false, '＋ Подгруппа', 'data-apkgroup-new="1"') : ''}`;
 }
 
 function apkGroupPanelHtml() {
   const g = apkCurrentGroup();
   if (!g) return '';
+  const cnt = g.count ?? g.points_count ?? 0;
   const typed = Object.entries(g.types || {}).filter(([k]) => k).map(([k, n]) => `${esc(k)}: ${n}`);
   const untyped = (g.types || {})[''] || 0;
   const btn = 'rounded-lg px-2.5 py-1 text-xs bg-slate-700/60 hover:bg-slate-600/60 transition-colors';
   if (g.kind) {          // автоматическая подгруппа «Требуют повторного выезда»: состав ведёт программа, вручную не меняется (app/services/apk_group_auto.py)
     return `<div class="rounded-xl border border-amber-400/30 bg-amber-500/5 px-3 py-2.5 space-y-1.5">
-      <div class="flex flex-wrap items-center gap-2"><b class="text-sm">⚠ ${esc(g.name)}</b><span class="text-xs text-slate-400">комплексов: ${g.count}</span><span class="rounded-lg px-2 py-0.5 text-[11px] bg-amber-500/15 text-amber-300">ведётся автоматически</span></div>
+      <div class="flex flex-wrap items-center gap-2"><b class="text-sm">⚠ ${esc(g.name)}</b><span class="text-xs text-slate-400">комплексов: ${cnt}</span><span class="rounded-lg px-2 py-0.5 text-[11px] bg-amber-500/15 text-amber-300">ведётся автоматически</span></div>
       ${g.description ? `<p class="text-xs text-slate-300" style="white-space:pre-wrap">${esc(g.description)}</p>` : ''}
       <p class="text-[11px] text-slate-500">Причина и «что нужно» взяты из отчёта о выезде (или из задания, которое не выполнили). Комплекс уходит отсюда сам, когда становится рабочим. Отметьте комплексы и нажмите «📌 В план…» или «Добавить в бригаду…», чтобы поехать на них снова.</p>
     </div>`;
   }
   return `<div class="rounded-xl border border-indigo-400/25 bg-indigo-500/5 px-3 py-2.5 space-y-2">
     <div class="flex flex-wrap items-center gap-2">
-      <b class="text-sm">📁 ${esc(g.name)}</b><span class="text-xs text-slate-400">комплексов: ${g.count}</span>
+      <b class="text-sm">📁 ${esc(g.name)}</b><span class="text-xs text-slate-400">комплексов: ${cnt}</span>
       ${apkCanEdit() ? `<span class="ml-auto flex flex-wrap items-center gap-1.5">
         <button type="button" id="apkGrpAdd" class="rounded-lg px-2.5 py-1 text-xs font-medium bg-indigo-500 hover:bg-indigo-400 text-white transition-colors" title="Добавить комплексы списком номеров или из файла Яндекс.Карт">＋ Добавить АПК…</button>
         <select id="apkGrpTypeAll" class="${fieldCls} !py-1 !text-xs !w-auto" title="Поставить этот тип работы всем комплексам подгруппы"><option value="">— тип всем —</option>${planVisitTypeOptions('')}</select>

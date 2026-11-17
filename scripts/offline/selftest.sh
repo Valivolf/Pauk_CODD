@@ -88,7 +88,7 @@ st_selftest_app() {
   fi
 
   local db
-  db="$(docker exec -i lan-calendar node -e '
+  db="$(docker exec -i lan-calendar node --no-warnings -e '
     const { DatabaseSync } = require("node:sqlite");
     const db = new DatabaseSync("/app/data/calendar.db");
     for (const fn of ["lc_dec_pfn", "lc_dec_pph", "lc_dec_plg", "lc_dec_ppw"]) {
@@ -97,12 +97,11 @@ st_selftest_app() {
     const problems = [];
     if (db.prepare("PRAGMA integrity_check").get().integrity_check !== "ok") problems.push("целостность базы нарушена");
     console.log(problems.length ? problems.join("; ") : "OK");
-  ' 2>&1 || true)"
-  if [ "$db" = "OK" ]; then
-    st_ok "база данных в порядке (integrity_check=ok)"
-  else
-    st_bad "база данных: $db" "откатите версию и проверьте $backup"
-  fi
+  ' 2>/dev/null || true)"
+  case "$db" in
+    OK*) st_ok "база данных в порядке (integrity_check=ok)" ;;
+    *) st_bad "база данных: ${db:-не удалось проверить}" "откатите версию и проверьте $backup" ;;
+  esac
 
   if [ -n "$before" ]; then
     local after t b a lost=""
