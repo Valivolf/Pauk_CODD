@@ -6,8 +6,10 @@ ENV NODE_ENV=production \
 
 WORKDIR /app
 
-# iputils-ping используется проверкой доступности («Пинг» в справочнике АПК и фоновым мониторингом).
-RUN apt-get update && apt-get install -y --no-install-recommends iputils-ping \
+# iputils-ping используется проверкой доступности («Пинг» в справочнике АПК и фоновым мониторингом),
+# python3 + smbprotocol — встроенным в приложение SMB2/SMB3-клиентом для сетевого диска с фото (без монтирования на хосте Ubuntu).
+RUN apt-get update && apt-get install -y --no-install-recommends iputils-ping python3 python3-pip \
+    && pip3 install --no-cache-dir --break-system-packages smbprotocol \
     && rm -rf /var/lib/apt/lists/*
 
 COPY package*.json ./

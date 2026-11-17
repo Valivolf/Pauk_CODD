@@ -107,6 +107,7 @@ services:
     environment:
       PAUK_HTTPS_PORT: "${PAUK_HTTPS_PORT:-8443}"
       PAUK_APP_PORT: "${PAUK_APP_PORT:-3010}"
+      SERVER_DOMAIN: "${SERVER_DOMAIN:-pauk.local}"
     volumes:
       - ./Caddyfile.pauk:/etc/caddy/Caddyfile:ro
       - pauk_caddy_data:/data

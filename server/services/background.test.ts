@@ -224,5 +224,67 @@ describe('background maintenance services', () => {
       await new Promise<void>((resolve) => srv.close(() => resolve()));
     }
   });
+
+  it('parses SMB UNC share paths, matches complex folders, and reads CODD_SPIDER photo_storage config', async () => {
+    initDb();
+    const db = getDb();
+    const {
+      parseSharePath,
+      matchFoldersToPoints,
+      loadSavedSmbConfig,
+      getPhotoStorageConfigView,
+    } = await import('./photoStorage.ts');
+
+    // 1. UNC / smb:// path parsing
+    assert.deepEqual(parseSharePath('\\\\10.13.192.10\\photos\\АПК\\2026'), {
+      server: '10.13.192.10',
+      share: 'photos',
+      folder: 'АПК/2026',
+    });
+    assert.deepEqual(parseSharePath('smb://nas.local/archive'), {
+      server: 'nas.local',
+      share: 'archive',
+      folder: '',
+    });
+
+    // 2. Complex folder matching (exact, Cyrillic/Latin lookalike, and prefix/token)
+    const matchRes = matchFoldersToPoints(
+      ['TEST-101', 'АПК C0123 Краснодар', 'UnknownFolder'],
+      ['TEST-101', 'С0123'],
+    );
+    assert.equal(matchRes.matches.get('TEST-101'), 'TEST-101');
+    assert.equal(matchRes.matches.get('АПК C0123 Краснодар'), 'С0123');
+    assert.equal(matchRes.matches.has('UnknownFolder'), false);
+
+    // 3. Compatibility with CODD_SPIDER app_flags key = 'photo_storage' and AAD = 'photo_storage.password'
+    const rawCfg = {
+      mode: 'smb',
+      server: '10.13.192.10',
+      share: 'photo_share',
+      folder: 'АПК',
+      port: 445,
+      domain: 'WORKGROUP',
+      username: 'smbuser',
+      password: encryptField('SecretPass123', 'photo_storage.password'),
+      organize: true,
+    };
+    db.prepare(
+      "INSERT OR REPLACE INTO app_flags (key, value) VALUES ('photo_storage', ?)",
+    ).run(JSON.stringify(rawCfg));
+
+    const loaded = loadSavedSmbConfig();
+    assert.equal(loaded.mode, 'smb');
+    assert.equal(loaded.server, '10.13.192.10');
+    assert.equal(loaded.share, 'photo_share');
+    assert.equal(loaded.folder, 'АПК');
+    assert.equal(loaded.username, 'smbuser');
+    assert.equal(loaded.password, 'SecretPass123');
+
+    const view = getPhotoStorageConfigView(loaded);
+    assert.equal(view.mode, 'smb');
+    assert.equal(view.path, '\\\\10.13.192.10\\photo_share\\АПК');
+    assert.equal(view.password_set, true);
+  });
 });
+
 

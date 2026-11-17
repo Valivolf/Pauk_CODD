@@ -11,6 +11,7 @@ import { PHOTOS_DIR, REPORT_TEMPLATES_DIR, settings } from '../config.ts';
 import { decryptField } from '../crypto.ts';
 import { bumpStateRev, getDb, nowIso } from '../db.ts';
 import { networkOk, secretsOk } from '../permissions.ts';
+import { storeVisitPhoto } from '../services/photoStorage.ts';
 import { callRobot, RobotRejectedError, RobotUnavailableError } from '../services/yandexRobotClient.ts';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
@@ -1237,13 +1238,14 @@ export function createReportsRouter(): Router {
                 )
                 .run(taskId, pointId, takenDate, ext, nowIso(), buf.length);
               const photoId = Number(info.lastInsertRowid);
-              const dir = path.join(PHOTOS_DIR, safePhotoSeg(pointId), takenDate);
-              fs.mkdirSync(dir, { recursive: true });
-              const filePath = path.join(dir, `${photoId}.${ext}`);
-              fs.writeFileSync(filePath, buf);
-              db.prepare('UPDATE visit_photos SET storage_path = ?, rel_path = ? WHERE id = ?').run(
-                filePath,
-                path.join(safePhotoSeg(pointId), takenDate, `${photoId}.${ext}`),
+              const stored = await storeVisitPhoto(
+                { id: photoId, point_id: pointId, taken_date: takenDate, file_ext: ext },
+                buf,
+              );
+              db.prepare('UPDATE visit_photos SET storage = ?, storage_path = ?, rel_path = ? WHERE id = ?').run(
+                stored.storage,
+                stored.storagePath,
+                stored.relPath,
                 photoId,
               );
               rowDone += 1;

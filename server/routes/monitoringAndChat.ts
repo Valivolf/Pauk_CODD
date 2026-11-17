@@ -21,6 +21,20 @@ import {
 import { decryptField } from '../crypto.ts';
 import { bumpStateRev, getDb, nowIso } from '../db.ts';
 import { hasPerm, networkOk, secretsOk } from '../permissions.ts';
+import {
+  PhotoStorageError,
+  deleteVisitPhotoFiles,
+  flushPhotoSpool,
+  getPhotoStorageStatus,
+  initPhotoStorageMarker,
+  readVisitPhotoBuffer,
+  savePhotoStorageConfig,
+  scanPhotoStorage,
+  startPhotoIndex,
+  startPhotoMigration,
+  storeVisitPhoto,
+  testPhotoStorageConnection,
+} from '../services/photoStorage.ts';
 
 const photoUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 16 * 1024 * 1024 } });
 const chatUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024, files: 10 } });
@@ -96,22 +110,6 @@ const IMAGE_MIME: Record<string, string> = {
 
 function safeFolderSegment(name: string): string {
   return String(name || 'unknown').replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').trim() || 'unknown';
-}
-
-function photoStoragePath(photo: {
-  id: number;
-  point_id: string;
-  taken_date: string;
-  file_ext: string;
-  storage_path?: string | null;
-  rel_path?: string | null;
-}): string {
-  if (photo.storage_path && fs.existsSync(photo.storage_path)) return photo.storage_path;
-  if (photo.rel_path) {
-    const p = path.join(PHOTOS_DIR, photo.rel_path);
-    if (fs.existsSync(p)) return p;
-  }
-  return path.join(PHOTOS_DIR, safeFolderSegment(photo.point_id), photo.taken_date, `${photo.id}.${photo.file_ext}`);
 }
 
 function stripPointSecrets<T extends Record<string, unknown>>(rows: T[], perms: string[]): T[] {
@@ -243,165 +241,6 @@ function getPointSummaries(dateFrom: string, dateTo: string, byReportDate: boole
       crew_label: crewLabel,
     };
   });
-}
-
-function getLocalDiskStats(): { free: number; total: number } | null {
-  try {
-    const st = fs.statfsSync(PHOTOS_DIR);
-    const total = Number(st.blocks) * Number(st.bsize);
-    const free = Number(st.bavail) * Number(st.bsize);
-    return { free, total };
-  } catch {
-    return null;
-  }
-}
-
-function dirStats(dir: string): { files: number; bytes: number } {
-  let files = 0;
-  let bytes = 0;
-  const walk = (d: string) => {
-    if (!fs.existsSync(d)) return;
-    for (const ent of fs.readdirSync(d, { withFileTypes: true })) {
-      const full = path.join(d, ent.name);
-      if (ent.isDirectory()) walk(full);
-      else if (ent.isFile()) {
-        files += 1;
-        try {
-          bytes += fs.statSync(full).size;
-        } catch {
-          // ignore
-        }
-      }
-    }
-  };
-  walk(dir);
-  return { files, bytes };
-}
-
-function getPhotoStorageConfig(): {
-  mode: string;
-  path: string;
-  port: number;
-  domain: string;
-  username: string;
-  password_set: boolean;
-  organize: boolean;
-  env_folder: string;
-} {
-  const db = getDb();
-  const row = db.prepare("SELECT value FROM app_flags WHERE key = 'photo_storage_config'").get() as
-    | { value: string }
-    | undefined;
-  let saved: Record<string, unknown> = {};
-  if (row) {
-    try {
-      saved = JSON.parse(row.value);
-    } catch {
-      saved = {};
-    }
-  }
-  return {
-    mode: saved.mode === 'smb' ? 'smb' : 'none',
-    path: String(saved.path || ''),
-    port: Number(saved.port || 445),
-    domain: String(saved.domain || ''),
-    username: String(saved.username || ''),
-    password_set: Boolean(saved.password),
-    organize: saved.organize !== false,
-    env_folder: settings.photosShareLabel || '',
-  };
-}
-
-const PHOTO_SPOOL_DIR = path.join(DATA_DIR, 'photo_spool');
-const PHOTO_MARKER_FILE = '.lan_calendar_photo_store';
-
-function getDiskStatsFor(targetDir: string): { free: number; total: number } | null {
-  try {
-    if (!fs.existsSync(targetDir)) return null;
-    const st = fs.statfsSync(targetDir);
-    const total = Number(st.blocks) * Number(st.bsize);
-    const free = Number(st.bavail) * Number(st.bsize);
-    return { free, total };
-  } catch {
-    return null;
-  }
-}
-
-function effectiveExternalPhotoDir(cfg: ReturnType<typeof getPhotoStorageConfig>): string {
-  if (cfg.mode === 'smb' && cfg.path && !cfg.path.startsWith('\\\\') && !cfg.path.startsWith('//')) {
-    return cfg.path;
-  }
-  const envDir = (process.env.PHOTOS_MOUNT_DIR || '').trim();
-  if (envDir && fs.existsSync(envDir)) return envDir;
-  if (PHOTOS_DIR !== path.join(DATA_DIR, 'visit_photos') && fs.existsSync(PHOTOS_DIR)) {
-    return PHOTOS_DIR;
-  }
-  return '';
-}
-
-const photoStorageRuntime = {
-  scan: null as null | { share?: { files: number; bytes: number }; spool?: { files: number; bytes: number }; local?: { files: number; bytes: number } },
-  migration: { state: 'idle', done: 0, total: 0, failed: 0, bytes: 0, message: '' },
-  index: {
-    state: 'idle',
-    done: 0,
-    matched: 0,
-    folders: 0,
-    found: 0,
-    added: 0,
-    renamed: 0,
-    moved: 0,
-    removed: 0,
-    unmatched_count: 0,
-    unmatched: [] as string[],
-    errors: 0,
-    message: '',
-    finished_at: '',
-  },
-};
-
-function getPhotoStorageStatus(includeConfig: boolean) {
-  const cfg = getPhotoStorageConfig();
-  const localStats = dirStats(PHOTOS_DIR);
-  const spoolStats = dirStats(PHOTO_SPOOL_DIR);
-  const localDisk = getLocalDiskStats();
-  const extDir = effectiveExternalPhotoDir(cfg);
-  const configured = (cfg.mode === 'smb' && Boolean(cfg.path)) || Boolean(extDir);
-  const extExists = Boolean(extDir && fs.existsSync(extDir));
-  const hasMarker = extExists && fs.existsSync(path.join(extDir, PHOTO_MARKER_FILE));
-  const needsMarker = Boolean(extExists && !hasMarker);
-  const available = Boolean(extExists && hasMarker);
-
-  let reason = '';
-  if (configured && !available) {
-    if (cfg.mode === 'smb' && (cfg.path.startsWith('\\\\') || cfg.path.startsWith('//'))) {
-      reason = 'Смонтируйте сетевую папку Windows/NAS на хосте в /mnt/lan-calendar-photos и задайте путь /app/photos (или PHOTOS_DIR=/app/photos)';
-    } else if (!extExists) {
-      reason = 'Указанная папка недоступна на сервере';
-    } else if (needsMarker) {
-      reason = 'В папке нет метки хранилища — нажмите «Подготовить диск»';
-    }
-  }
-
-  const out: Record<string, unknown> = {
-    mode: cfg.mode,
-    configured,
-    available,
-    reason,
-    path: cfg.mode === 'smb' && cfg.path ? cfg.path : extDir || PHOTOS_DIR,
-    needs_marker: needsMarker,
-    local_disk: localDisk,
-    share_disk: available ? getDiskStatsFor(extDir) : null,
-    server_files: {
-      server: localStats,
-      buffer: spoolStats,
-    },
-    scan: photoStorageRuntime.scan,
-    migration: { ...photoStorageRuntime.migration },
-    index: { ...photoStorageRuntime.index },
-  };
-  if (includeConfig) out.config = cfg;
-  return out;
 }
 
 // ---------- Data issues helpers ----------
@@ -1049,7 +888,7 @@ export function createMonitoringAndChatRouter(): Router {
     });
   });
 
-  router.post('/api/monitoring/photos/upload', requirePasswordOk, photoUpload.single('file'), (req: AuthedRequest, res) => {
+  router.post('/api/monitoring/photos/upload', requirePasswordOk, photoUpload.single('file'), async (req: AuthedRequest, res) => {
     const pointId = String(req.body?.point_id || '').trim();
     const date = String(req.body?.date || '').trim();
     if (!isIsoDate(date)) {
@@ -1097,14 +936,17 @@ export function createMonitoringAndChatRouter(): Router {
       )
       .run(pointId, date, ext, now, req.sessionUser!.username, cleanName, buf.length);
     const id = Number(info.lastInsertRowid);
-    const dest = path.join(PHOTOS_DIR, safeFolderSegment(pointId), date, `${id}.${ext}`);
-    fs.mkdirSync(path.dirname(dest), { recursive: true });
-    fs.writeFileSync(dest, buf);
-    db.prepare('UPDATE visit_photos SET storage_path = ? WHERE id = ?').run(dest, id);
+    const stored = await storeVisitPhoto({ id, point_id: pointId, taken_date: date, file_ext: ext }, buf);
+    db.prepare('UPDATE visit_photos SET storage = ?, storage_path = ?, rel_path = ? WHERE id = ?').run(
+      stored.storage,
+      stored.storagePath,
+      stored.relPath,
+      id,
+    );
     res.json({ id, date, ext });
   });
 
-  router.get('/api/monitoring/photos/export-all', requirePasswordOk, (_req, res) => {
+  router.get('/api/monitoring/photos/export-all', requirePasswordOk, async (_req, res) => {
     const photos = getDb()
       .prepare('SELECT id, point_id, taken_date, file_ext, storage_path, rel_path, file_name FROM visit_photos ORDER BY point_id, taken_date, id')
       .all() as Array<{
@@ -1128,16 +970,16 @@ export function createMonitoringAndChatRouter(): Router {
     });
     archive.pipe(res);
     for (const ph of photos) {
-      const p = photoStoragePath(ph);
-      if (fs.existsSync(p)) {
+      const buf = await readVisitPhotoBuffer(ph);
+      if (buf) {
         const entryName = `${safeFolderSegment(ph.point_id)}/${fmtRuDate(ph.taken_date)}/${ph.id}.${ph.file_ext}`;
-        archive.file(p, { name: entryName });
+        archive.append(buf, { name: entryName });
       }
     }
-    archive.finalize();
+    await archive.finalize();
   });
 
-  router.get('/api/monitoring/photos/export', requirePasswordOk, (req, res) => {
+  router.get('/api/monitoring/photos/export', requirePasswordOk, async (req, res) => {
     const date = String(req.query.date || '');
     if (!isIsoDate(date)) {
       res.status(400).json({ detail: 'Неверная дата' });
@@ -1161,15 +1003,15 @@ export function createMonitoringAndChatRouter(): Router {
     });
     archive.pipe(res);
     for (const ph of photos) {
-      const p = photoStoragePath(ph);
-      if (fs.existsSync(p)) {
-        archive.file(p, { name: `${safeFolderSegment(ph.point_id)}/${ph.id}.${ph.file_ext}` });
+      const buf = await readVisitPhotoBuffer(ph);
+      if (buf) {
+        archive.append(buf, { name: `${safeFolderSegment(ph.point_id)}/${ph.id}.${ph.file_ext}` });
       }
     }
-    archive.finalize();
+    await archive.finalize();
   });
 
-  router.get('/api/monitoring/photos/:photoId/file', requirePasswordOk, (req, res) => {
+  router.get('/api/monitoring/photos/:photoId/file', requirePasswordOk, async (req, res) => {
     const photoId = Number(req.params.photoId);
     const ph = getDb()
       .prepare('SELECT id, point_id, taken_date, file_ext, storage_path, rel_path, file_name FROM visit_photos WHERE id = ?')
@@ -1188,8 +1030,8 @@ export function createMonitoringAndChatRouter(): Router {
       res.status(404).json({ detail: 'Фото не найдено' });
       return;
     }
-    const filePath = photoStoragePath(ph);
-    if (!fs.existsSync(filePath)) {
+    const buf = await readVisitPhotoBuffer(ph);
+    if (!buf) {
       res.status(404).json({ detail: 'Файл фото не найден на диске' });
       return;
     }
@@ -1208,10 +1050,10 @@ export function createMonitoringAndChatRouter(): Router {
       res.setHeader('Cache-Control', 'private, max-age=3600');
     }
     res.setHeader('Content-Type', mime);
-    res.sendFile(path.resolve(filePath));
+    res.send(buf);
   });
 
-  router.delete('/api/monitoring/photos/:photoId', requirePasswordOk, (req, res) => {
+  router.delete('/api/monitoring/photos/:photoId', requirePasswordOk, async (req, res) => {
     const photoId = Number(req.params.photoId);
     const db = getDb();
     const ph = db
@@ -1235,17 +1077,12 @@ export function createMonitoringAndChatRouter(): Router {
       res.status(409).json({ detail: 'Это фото из прежнего архива на сетевом диске — программа его не удаляет.' });
       return;
     }
-    const p = photoStoragePath(ph);
-    try {
-      if (fs.existsSync(p)) fs.unlinkSync(p);
-    } catch {
-      // ignore disk cleanup error
-    }
+    await deleteVisitPhotoFiles(ph);
     db.prepare('DELETE FROM visit_photos WHERE id = ?').run(photoId);
     res.json({ removed: 1 });
   });
 
-  router.delete('/api/monitoring/photos', requirePasswordOk, (req, res) => {
+  router.delete('/api/monitoring/photos', requirePasswordOk, async (req, res) => {
     const pointId = String(req.query.point_id || '');
     const date = String(req.query.date || '');
     if (!isIsoDate(date)) {
@@ -1264,12 +1101,7 @@ export function createMonitoringAndChatRouter(): Router {
       rel_path: string | null;
     }>;
     for (const ph of list) {
-      try {
-        const p = photoStoragePath(ph);
-        if (fs.existsSync(p)) fs.unlinkSync(p);
-      } catch {
-        // ignore
-      }
+      await deleteVisitPhotoFiles(ph);
     }
     const info = db
       .prepare("DELETE FROM visit_photos WHERE point_id = ? AND taken_date = ? AND coalesce(source, '') != 'import'")
@@ -1277,250 +1109,68 @@ export function createMonitoringAndChatRouter(): Router {
     res.json({ removed: info.changes });
   });
 
-  // ======================== PHOTO STORAGE ========================
-  router.get('/api/photo-storage', requirePasswordOk, (req: AuthedRequest, res) => {
+  // ======================== PHOTO STORAGE (Встроенный SMB2/SMB3-клиент + локальный буфер) ========================
+  router.get('/api/photo-storage', requirePasswordOk, async (req: AuthedRequest, res) => {
     const admin = hasPerm(req.sessionUser!.permissions, 'admin.settings');
-    res.json(getPhotoStorageStatus(admin));
+    res.json(await getPhotoStorageStatus(admin));
   });
 
-  router.put('/api/photo-storage/config', requirePerm('admin.settings'), (req, res) => {
-    const b = req.body || {};
-    const port = Number(b.port || 445);
-    if (!Number.isFinite(port) || port < 1 || port > 65535) {
-      res.status(400).json({ detail: 'Порт — число от 1 до 65535' });
-      return;
-    }
-    const prev = getPhotoStorageConfig();
-    const nextCfg = {
-      mode: b.mode === 'smb' ? 'smb' : 'none',
-      path: String(b.path || '').trim(),
-      port,
-      domain: String(b.domain || '').trim(),
-      username: String(b.username || '').trim(),
-      password: b.password ? '***' : prev.password_set ? '***' : '',
-      organize: b.organize !== false,
-    };
-    getDb()
-      .prepare(
-        "INSERT INTO app_flags (key, value) VALUES ('photo_storage_config', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-      )
-      .run(JSON.stringify(nextCfg));
-    res.json(getPhotoStorageStatus(true));
-  });
-
-  router.post('/api/photo-storage/test', requirePerm('admin.settings'), (req, res) => {
-    const b = req.body || {};
-    const target = String(b.path || '').trim();
-    if (!target) {
-      res.json({ ok: false, target: '', message: 'Укажите путь к папке' });
-      return;
-    }
-    if (target.startsWith('\\\\') || target.startsWith('//')) {
-      res.json({
-        ok: false,
-        target,
-        message: 'В Linux/Docker смонтируйте сетевую папку на сервере в /mnt/lan-calendar-photos и укажите путь /app/photos.',
-      });
-      return;
-    }
+  router.put('/api/photo-storage/config', requirePerm('admin.settings'), async (req, res) => {
     try {
-      if (!fs.existsSync(target) || !fs.statSync(target).isDirectory()) {
-        res.json({ ok: false, target, message: 'Папка не найдена на сервере' });
+      const status = await savePhotoStorageConfig(req.body || {});
+      res.json(status);
+    } catch (err) {
+      if (err instanceof PhotoStorageError) {
+        res.status(409).json({ detail: err.message });
         return;
       }
-      fs.accessSync(target, fs.constants.R_OK | fs.constants.W_OK);
-      const entries = fs.readdirSync(target, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name);
-      res.json({
-        ok: true,
-        target,
-        folders: entries.length,
-        names: entries.slice(0, 8),
-        disk: getDiskStatsFor(target),
-      });
-    } catch (err) {
-      res.json({ ok: false, target, message: (err as Error).message });
+      res.status(400).json({ detail: (err as Error).message });
     }
   });
 
-  router.post('/api/photo-storage/scan', requirePerm('admin.settings'), (_req, res) => {
-    const cfg = getPhotoStorageConfig();
-    const extDir = effectiveExternalPhotoDir(cfg);
-    photoStorageRuntime.scan = {
-      share: extDir && fs.existsSync(extDir) ? dirStats(extDir) : undefined,
-      spool: dirStats(PHOTO_SPOOL_DIR),
-      local: dirStats(PHOTOS_DIR),
-    };
-    res.json(getPhotoStorageStatus(true));
-  });
-
-  router.post('/api/photo-storage/marker', requirePerm('admin.settings'), (_req, res) => {
-    const cfg = getPhotoStorageConfig();
-    const extDir = effectiveExternalPhotoDir(cfg);
-    if (!extDir || !fs.existsSync(extDir)) {
-      res.status(409).json({ detail: 'Подготовка диска доступна только когда папка хранилища смонтирована на сервере' });
-      return;
-    }
+  router.post('/api/photo-storage/test', requirePerm('admin.settings'), async (req, res) => {
     try {
-      fs.writeFileSync(path.join(extDir, PHOTO_MARKER_FILE), `lan-calendar ${nowIso()}\n`, 'utf-8');
-      res.json(getPhotoStorageStatus(true));
+      const result = await testPhotoStorageConnection(req.body || {});
+      res.json(result);
     } catch (err) {
-      res.status(409).json({ detail: `Не удалось записать метку: ${(err as Error).message}` });
-    }
-  });
-
-  router.post('/api/photo-storage/flush', requirePerm('admin.settings'), (_req, res) => {
-    const cfg = getPhotoStorageConfig();
-    const extDir = effectiveExternalPhotoDir(cfg);
-    const targetRoot = extDir && fs.existsSync(path.join(extDir, PHOTO_MARKER_FILE)) ? extDir : PHOTOS_DIR;
-    let moved = 0;
-    if (fs.existsSync(PHOTO_SPOOL_DIR)) {
-      const db = getDb();
-      const walkFlush = (dir: string, relBase: string) => {
-        for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
-          const src = path.join(dir, ent.name);
-          const rel = path.join(relBase, ent.name);
-          if (ent.isDirectory()) {
-            walkFlush(src, rel);
-          } else if (ent.isFile()) {
-            const dst = path.join(targetRoot, rel);
-            fs.mkdirSync(path.dirname(dst), { recursive: true });
-            fs.copyFileSync(src, dst);
-            fs.unlinkSync(src);
-            db.prepare('UPDATE visit_photos SET storage_path = ?, rel_path = ? WHERE storage_path = ?').run(dst, rel, src);
-            moved += 1;
-          }
-        }
-      };
-      walkFlush(PHOTO_SPOOL_DIR, '');
-    }
-    res.json({ moved, status: getPhotoStorageStatus(true) });
-  });
-
-  router.post('/api/photo-storage/migrate', requirePerm('admin.settings'), (_req, res) => {
-    const cfg = getPhotoStorageConfig();
-    const extDir = effectiveExternalPhotoDir(cfg);
-    if (!extDir || !fs.existsSync(path.join(extDir, PHOTO_MARKER_FILE))) {
-      res.status(409).json({ detail: 'Внешнее хранилище не подготовлено или недоступно' });
-      return;
-    }
-    if (extDir === PHOTOS_DIR) {
-      res.status(409).json({ detail: 'Текущая локальная папка уже совпадает с целевой' });
-      return;
-    }
-    const db = getDb();
-    const rows = db.prepare("SELECT id, point_id, taken_date, file_ext, storage_path, rel_path FROM visit_photos WHERE storage = 'local'").all() as Array<{
-      id: number;
-      point_id: string;
-      taken_date: string;
-      file_ext: string;
-      storage_path: string;
-      rel_path: string | null;
-    }>;
-    photoStorageRuntime.migration = { state: 'running', done: 0, total: rows.length, failed: 0, bytes: 0, message: '' };
-    setImmediate(() => {
-      for (const ph of rows) {
-        try {
-          const src = photoStoragePath(ph);
-          if (!fs.existsSync(src)) {
-            photoStorageRuntime.migration.failed += 1;
-            continue;
-          }
-          const rel = path.join(safeFolderSegment(ph.point_id), ph.taken_date, `${ph.id}.${ph.file_ext}`);
-          const dst = path.join(extDir, rel);
-          fs.mkdirSync(path.dirname(dst), { recursive: true });
-          const sz = fs.statSync(src).size;
-          fs.copyFileSync(src, dst);
-          fs.unlinkSync(src);
-          db.prepare("UPDATE visit_photos SET storage = 'share', storage_path = ?, rel_path = ? WHERE id = ?").run(dst, rel, ph.id);
-          photoStorageRuntime.migration.done += 1;
-          photoStorageRuntime.migration.bytes += sz;
-        } catch (err) {
-          photoStorageRuntime.migration.failed += 1;
-          photoStorageRuntime.migration.message = (err as Error).message;
-        }
+      if (err instanceof PhotoStorageError) {
+        res.status(409).json({ detail: err.message });
+        return;
       }
-      photoStorageRuntime.migration.state = photoStorageRuntime.migration.failed > 0 ? 'finished_with_errors' : 'done';
-    });
-    res.json(getPhotoStorageStatus(true));
+      res.status(400).json({ detail: (err as Error).message });
+    }
   });
 
-  router.post('/api/photo-storage/index', requirePerm('admin.settings'), (_req, res) => {
-    const cfg = getPhotoStorageConfig();
-    const extDir = effectiveExternalPhotoDir(cfg);
-    const rootDir = extDir && fs.existsSync(extDir) ? extDir : PHOTOS_DIR;
-    const db = getDb();
-    const allPts = db.prepare('SELECT id FROM points').all() as Array<{ id: string }>;
-    const byLow = new Map(allPts.map((p) => [p.id.toLowerCase(), p.id]));
-    const existingPaths = new Set(
-      (db.prepare('SELECT storage_path, rel_path FROM visit_photos').all() as Array<{ storage_path: string; rel_path: string | null }>).flatMap((r) =>
-        [r.storage_path, r.rel_path ? path.join(rootDir, r.rel_path) : ''].filter(Boolean),
-      ),
-    );
-    const ix = photoStorageRuntime.index;
-    ix.state = 'running';
-    ix.done = 0;
-    ix.matched = 0;
-    ix.folders = 0;
-    ix.found = 0;
-    ix.added = 0;
-    ix.renamed = 0;
-    ix.moved = 0;
-    ix.removed = 0;
-    ix.errors = 0;
-    ix.unmatched = [];
-    ix.unmatched_count = 0;
-    ix.message = '';
+  router.post('/api/photo-storage/scan', requirePerm('admin.settings'), async (_req, res) => {
+    res.json(await scanPhotoStorage());
+  });
 
-    setImmediate(() => {
-      try {
-        if (fs.existsSync(rootDir)) {
-          const topDirs = fs.readdirSync(rootDir, { withFileTypes: true }).filter((d) => d.isDirectory());
-          ix.folders = topDirs.length;
-          for (const td of topDirs) {
-            const pointId = byLow.get(td.name.toLowerCase());
-            if (!pointId) {
-              ix.unmatched_count += 1;
-              if (ix.unmatched.length < 20) ix.unmatched.push(td.name);
-              continue;
-            }
-            ix.matched += 1;
-            const pointPath = path.join(rootDir, td.name);
-            const scanPoint = (curDir: string, dateHint: string) => {
-              for (const ent of fs.readdirSync(curDir, { withFileTypes: true })) {
-                const full = path.join(curDir, ent.name);
-                if (ent.isDirectory()) {
-                  const m = /^(\d{4}-\d{2}-\d{2})$/.exec(ent.name) || /^(\d{2})-(\d{2})-(\d{4})$/.exec(ent.name);
-                  const dStr = m ? (m.length === 2 ? m[1] : `${m[3]}-${m[2]}-${m[1]}`) : dateHint;
-                  scanPoint(full, dStr);
-                } else if (ent.isFile()) {
-                  const ext = path.extname(ent.name).replace('.', '').toLowerCase();
-                  if (!IMAGE_MIME[ext]) continue;
-                  ix.found += 1;
-                  if (!existingPaths.has(full)) {
-                    const st = fs.statSync(full);
-                    const taken = dateHint || st.mtime.toISOString().slice(0, 10);
-                    const rel = path.relative(rootDir, full);
-                    db.prepare(
-                      `INSERT INTO visit_photos (task_id, point_id, taken_date, file_ext, uploaded_at, uploaded_by, storage, storage_path, rel_path, source, file_name, file_size)
-                       VALUES (?, ?, ?, ?, ?, 'Диск', ?, ?, ?, 'import', ?, ?)`,
-                    ).run(`idx_${pointId}_${taken}`, pointId, taken, ext, nowIso(), extDir ? 'share' : 'local', full, rel, ent.name, st.size);
-                    ix.added += 1;
-                  }
-                }
-              }
-            };
-            scanPoint(pointPath, '');
-            ix.done += 1;
-          }
-        }
-        ix.state = ix.errors > 0 ? 'finished_with_errors' : 'done';
-        ix.finished_at = nowIso();
-      } catch (err) {
-        ix.state = 'error';
-        ix.message = (err as Error).message;
-      }
-    });
-    res.json(getPhotoStorageStatus(true));
+  router.post('/api/photo-storage/marker', requirePerm('admin.settings'), async (_req, res) => {
+    try {
+      res.json(await initPhotoStorageMarker());
+    } catch (err) {
+      res.status(409).json({ detail: (err as Error).message });
+    }
+  });
+
+  router.post('/api/photo-storage/flush', requirePerm('admin.settings'), async (_req, res) => {
+    res.json(await flushPhotoSpool());
+  });
+
+  router.post('/api/photo-storage/migrate', requirePerm('admin.settings'), async (_req, res) => {
+    try {
+      res.json(await startPhotoMigration());
+    } catch (err) {
+      res.status(409).json({ detail: (err as Error).message });
+    }
+  });
+
+  router.post('/api/photo-storage/index', requirePerm('admin.settings'), async (_req, res) => {
+    try {
+      res.json(await startPhotoIndex(false));
+    } catch (err) {
+      res.status(409).json({ detail: (err as Error).message });
+    }
   });
 
   // ======================== NOTIFICATIONS ========================

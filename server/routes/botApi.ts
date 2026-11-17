@@ -12,6 +12,7 @@ import { requireBotKey } from '../auth.ts';
 import { CHAT_FILES_DIR, PHOTOS_DIR, settings } from '../config.ts';
 import { decryptField } from '../crypto.ts';
 import { bumpStateRev, getDb, nowIso } from '../db.ts';
+import { deleteVisitPhotoFiles, storeVisitPhoto } from '../services/photoStorage.ts';
 
 const execFileAsync = promisify(execFile);
 
@@ -1534,7 +1535,7 @@ export function createBotApiRouter(): Router {
     }
   });
 
-  router.post('/api/bot/photos', requireBotKey, photoUpload.single('file'), (req: Request, res: Response) => {
+  router.post('/api/bot/photos', requireBotKey, photoUpload.single('file'), async (req: Request, res: Response) => {
     try {
       const db = getDb();
       const vkId = Number(req.body?.vk_id);
@@ -1565,11 +1566,16 @@ export function createBotApiRouter(): Router {
         )
         .run(task.id, task.point, takenDate, ext, now, person.full_name, origName || null, file.buffer.length);
       const photoId = Number(info.lastInsertRowid);
-      const destDir = path.join(PHOTOS_DIR, safeFolderSegment(task.point), takenDate);
-      fs.mkdirSync(destDir, { recursive: true });
-      const dest = path.join(destDir, `${photoId}.${ext}`);
-      fs.writeFileSync(dest, file.buffer);
-      db.prepare('UPDATE visit_photos SET storage_path = ? WHERE id = ?').run(dest, photoId);
+      const stored = await storeVisitPhoto(
+        { id: photoId, point_id: task.point, taken_date: takenDate, file_ext: ext },
+        file.buffer,
+      );
+      db.prepare('UPDATE visit_photos SET storage = ?, storage_path = ?, rel_path = ? WHERE id = ?').run(
+        stored.storage,
+        stored.storagePath,
+        stored.relPath,
+        photoId,
+      );
       bumpStateRev();
       res.json({ id: photoId });
     } catch (err) {
@@ -1593,14 +1599,14 @@ export function createBotApiRouter(): Router {
     }
   });
 
-  router.delete('/api/bot/photos/:photoId', requireBotKey, (req: Request, res: Response) => {
+  router.delete('/api/bot/photos/:photoId', requireBotKey, async (req: Request, res: Response) => {
     try {
       const db = getDb();
       requirePersonByVk(db, Number(req.query.vk_id));
       const photoId = Number(req.params.photoId);
       const taskId = String(req.query.task_id || '');
       const row = db
-        .prepare('SELECT id, task_id, point_id, taken_date, file_ext, storage_path, rel_path FROM visit_photos WHERE id = ?')
+        .prepare('SELECT id, task_id, point_id, taken_date, file_ext, storage_path, rel_path, source FROM visit_photos WHERE id = ?')
         .get(photoId) as
         | {
             id: number;
@@ -1610,21 +1616,11 @@ export function createBotApiRouter(): Router {
             file_ext: string;
             storage_path?: string | null;
             rel_path?: string | null;
+            source?: string | null;
           }
         | undefined;
       if (!row || row.task_id !== taskId) throw new HttpError(404, 'Фото не найдено');
-      const candidates = [
-        row.storage_path || '',
-        row.rel_path ? path.join(PHOTOS_DIR, row.rel_path) : '',
-        path.join(PHOTOS_DIR, safeFolderSegment(row.point_id), row.taken_date, `${row.id}.${row.file_ext}`),
-      ].filter(Boolean);
-      for (const fp of candidates) {
-        try {
-          if (fs.existsSync(fp)) fs.unlinkSync(fp);
-        } catch {
-          // ignore unlink error
-        }
-      }
+      await deleteVisitPhotoFiles(row);
       db.prepare('DELETE FROM visit_photos WHERE id = ?').run(photoId);
       bumpStateRev();
       res.json({ ok: true });

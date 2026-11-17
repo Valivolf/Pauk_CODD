@@ -14,7 +14,7 @@ export const SQLITE_FIELD_FUNCTIONS: Record<string, string> = {
   'points.password': 'lc_dec_ppw',
 };
 
-const KNOWN_FIELDS = Object.keys(SQLITE_FIELD_FUNCTIONS);
+const KNOWN_FIELDS = [...Object.keys(SQLITE_FIELD_FUNCTIONS), 'photo_storage.password'];
 
 let currentKeyBase64 = settings.fieldEncryptionKey;
 const decryptCache = new Map<string, string>();

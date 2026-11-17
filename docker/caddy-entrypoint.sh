@@ -37,6 +37,8 @@ else
   else
     echo "[entrypoint] WARNING: $ENV_FILE not found (mount it as a volume) — cannot persist the detected address." >&2
   fi
+if [ -z "${SERVER_DOMAIN:-}" ]; then
+  export SERVER_DOMAIN="pauk.local"
 fi
 
 exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile

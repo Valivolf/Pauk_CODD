@@ -3,6 +3,7 @@ import path from 'node:path';
 import { BACKUP_DIR, DB_PATH, settings } from '../config.ts';
 import { bumpStateRev, getDb, nowIso } from '../db.ts';
 import { checkTcpPort, pingHost } from './networkCheck.ts';
+import { runPhotoStorageMaintenanceTick } from './photoStorage.ts';
 
 export interface BackgroundTaskInfo {
   name: string;
@@ -479,6 +480,15 @@ export function startBackgroundServices(): { stop: () => void } {
   }, 120 * 1000);
   healthLoop.unref?.();
   timers.push(healthLoop);
+
+  // SMB photo storage spool flush & hourly complex folder index loop every 60s
+  const photoLoop = setInterval(() => {
+    void runTrackedTask('сетевой диск для фото', async () => {
+      await runPhotoStorageMaintenanceTick();
+    });
+  }, 60 * 1000);
+  photoLoop.unref?.();
+  timers.push(photoLoop);
 
   return {
     stop: () => {

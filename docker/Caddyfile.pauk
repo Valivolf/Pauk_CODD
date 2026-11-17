@@ -3,16 +3,10 @@
 	auto_https disable_redirects
 	https_port {$PAUK_HTTPS_PORT:8443}
 	default_sni {$SERVER_ADDRESS:localhost}
-	on_demand_tls {
-		interval 1m
-		burst 10
-	}
 }
 
-https://{$SERVER_ADDRESS:localhost}:{$PAUK_HTTPS_PORT:8443}, https://{$SERVER_DOMAIN:pauk.local}:{$PAUK_HTTPS_PORT:8443}, https://localhost:{$PAUK_HTTPS_PORT:8443}, https://127.0.0.1:{$PAUK_HTTPS_PORT:8443}, https://:{$PAUK_HTTPS_PORT:8443} {
-	tls internal {
-		on_demand
-	}
+https://{$SERVER_ADDRESS:localhost}:{$PAUK_HTTPS_PORT:8443}, https://{$SERVER_DOMAIN:pauk.local}:{$PAUK_HTTPS_PORT:8443}, https://localhost:{$PAUK_HTTPS_PORT:8443}, https://127.0.0.1:{$PAUK_HTTPS_PORT:8443} {
+	tls internal
 
 	# Корневой сертификат Caddy для «Паук» (публичная часть root.crt).
 	handle /ca.crt {

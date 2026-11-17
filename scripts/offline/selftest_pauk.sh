@@ -20,10 +20,13 @@ st_container_running() {
 st_db_counts_file() {
   local db_host_path="$1"
   [ -f "$db_host_path" ] || return 0
-  docker run --rm -v "$db_host_path:/db/calendar.db:ro" pauk:latest node --no-warnings -e '
+  local db_dir db_name
+  db_dir="$(cd "$(dirname "$db_host_path")" && pwd)"
+  db_name="$(basename "$db_host_path")"
+  docker run --rm -e DB_NAME="$db_name" -v "$db_dir:/db:ro" pauk:latest node --no-warnings -e '
     const { DatabaseSync } = require("node:sqlite");
     try {
-      const db = new DatabaseSync("/db/calendar.db", { readOnly: true });
+      const db = new DatabaseSync("/db/" + process.env.DB_NAME, { readOnly: true });
       for (const fn of ["lc_dec_pfn", "lc_dec_pph", "lc_dec_plg", "lc_dec_ppw"]) {
         db.function(fn, { deterministic: true }, (v) => v ?? "");
       }

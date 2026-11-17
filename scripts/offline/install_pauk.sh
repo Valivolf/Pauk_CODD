@@ -123,11 +123,24 @@ fi
 echo "[4/6] Копирую базу данных, ключи шифрования и настройки со старой версии…"
 BASELINE_COUNTS=""
 
-# Если в /opt/pauk уже есть своя БД — делаем её бэкап перед обновлением.
+# Если в /opt/pauk уже есть своя БД — сбрасываем WAL в основной файл и делаем бэкап перед обновлением.
 if [ -f "$TARGET/data/calendar.db" ]; then
+  if st_container_running pauk-app; then
+    docker exec -i pauk-app node --no-warnings -e '
+      const { DatabaseSync } = require("node:sqlite");
+      const db = new DatabaseSync("/app/data/calendar.db");
+      for (const fn of ["lc_dec_pfn", "lc_dec_pph", "lc_dec_plg", "lc_dec_ppw"]) {
+        db.function(fn, { deterministic: true }, (v) => v ?? "");
+      }
+      db.exec("PRAGMA wal_checkpoint(TRUNCATE);");
+      db.close();
+    ' >/dev/null 2>&1 || true
+    BASELINE_COUNTS="$(st_pauk_counts)"
+  else
+    BASELINE_COUNTS="$(st_db_counts_file "$TARGET/data/calendar.db")"
+  fi
   cp "$TARGET/data/calendar.db" "$TARGET/backups/before-update-$STAMP.db"
   echo "      сохранена резервная копия текущей БД: $TARGET/backups/before-update-$STAMP.db"
-  BASELINE_COUNTS="$(st_db_counts_file "$TARGET/data/calendar.db")"
 fi
 
 # Если это первая установка в /opt/pauk (или указан --copy-db) и найдена старая база в /opt/lan_calendar:
